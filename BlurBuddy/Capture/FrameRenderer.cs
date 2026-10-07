@@ -1,13 +1,12 @@
 using System;
 using System.Runtime.InteropServices;
 
-using BlurBuddy.Graphics;
-
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 
 using Sheep.OBSHookLibrary.Devices;
 
-using ID3D11Texture2D = Vortice.Direct3D11.ID3D11Texture2D;
+using Vortice.Direct3D11;
+using Vortice.DXGI;
 
 namespace BlurBuddy.Capture;
 
@@ -19,11 +18,15 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private static FrameRenderer? instance;
 
 	private readonly object resourceLock = new();
-	private nint capture;
-	private nint captureSrv;
-	private nint output;
-	private nint outputUav;
-	private D3D11.Texture2DDesc captureDesc;
+	// Game owned, pointed at per use and cleared after: the wrappers' finalizers would release them
+	private readonly ID3D11DeviceContext gameContext = new(0);
+	private readonly ID3D11Texture2D gameTexture = new(0);
+	private Texture2DDescription captureDesc;
+	private ID3D11Texture2D? capture;
+	private ID3D11ShaderResourceView? captureSrv;
+	private ID3D11Texture2D? output;
+	private ID3D11UnorderedAccessView? outputUav;
+	private ID3D11ShaderResourceView? outputSrv;
 
 	public FrameRenderer() => instance = this;
 
@@ -33,17 +36,15 @@ public sealed unsafe class FrameRenderer: IDisposable
 
 	public string ObsStatus { get; private set; } = "Waiting for OBS";
 
-	public nint OutputSrv { get; private set; }
-
 	/// <summary>Raw capture until a composite writes the output</summary>
-	public nint PreviewSrv => this.Composite == null ? this.captureSrv : this.OutputSrv;
+	public nint PreviewSrv => (this.Composite == null ? this.captureSrv : this.outputSrv)?.NativePointer ?? 0;
 
 	public uint OutputWidth => this.captureDesc.Width;
 
 	public uint OutputHeight => this.captureDesc.Height;
 
 	/// <summary>Context, capture SRV, output UAV, width, height, frame slot</summary>
-	public Action<nint, nint, nint, uint, uint, nint>? Composite { get; set; }
+	public Action<ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11UnorderedAccessView, uint, uint, nint>? Composite { get; set; }
 
 	[UnmanagedCallersOnly]
 	public static void OnRender(nint slot)
@@ -65,66 +66,60 @@ public sealed unsafe class FrameRenderer: IDisposable
 		if (source == null || source->D3D11Texture2D == null)
 			return;
 
-		nint context = (nint)Device.Instance()->D3D11DeviceContext;
-		nint sourceTexture = (nint)source->D3D11Texture2D;
 		lock (this.resourceLock)
 		{
-			this.EnsureTextures(sourceTexture);
-			D3D11.CopyResource(context, this.capture, sourceTexture);
-			if (this.Composite != null)
-				this.Composite(context, this.captureSrv, this.outputUav, this.captureDesc.Width, this.captureDesc.Height, slot);
-			else
-				D3D11.CopyResource(context, this.output, this.capture);
-			this.PresentToObs(sourceTexture);
+			this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
+			this.gameTexture.NativePointer = (nint)source->D3D11Texture2D;
+			try
+			{
+				this.EnsureTextures(this.gameTexture);
+				this.gameContext.CopyResource(this.capture, this.gameTexture);
+				if (this.Composite != null)
+					this.Composite(this.gameContext, this.captureSrv!, this.outputUav!, this.captureDesc.Width, this.captureDesc.Height, slot);
+				else
+					this.gameContext.CopyResource(this.output, this.capture);
+				this.PresentToObs();
+			}
+			finally
+			{
+				this.gameContext.NativePointer = 0;
+				this.gameTexture.NativePointer = 0;
+			}
 		}
 	}
 
-	private void EnsureTextures(nint source)
+	private void EnsureTextures(ID3D11Texture2D source)
 	{
-		D3D11.Texture2DDesc desc = D3D11.GetDesc(source);
-		if (this.capture != 0 && desc.Width == this.captureDesc.Width && desc.Height == this.captureDesc.Height &&
+		Texture2DDescription desc = source.Description;
+		if (this.capture != null && desc.Width == this.captureDesc.Width && desc.Height == this.captureDesc.Height &&
 		    desc.Format == this.captureDesc.Format)
 			return;
 
 		this.ReleaseTextures();
-		nint device = D3D11.GetDevice(source);
-		try
-		{
-			this.capture = D3D11.CreateTexture2D(device, desc.Width, desc.Height, desc.Format, D3D11.BindShaderResource, 0);
-			this.captureSrv = D3D11.CreateSrv(device, this.capture);
-			// RGBA: typed UAV stores on BGRA are optional in D3D11
-			this.output = D3D11.CreateTexture2D(device, desc.Width, desc.Height, D3D11.FormatR8G8B8A8Unorm,
-				D3D11.BindShaderResource | D3D11.BindUnorderedAccess, 0);
-			this.outputUav = D3D11.CreateUav(device, this.output, D3D11.FormatR8G8B8A8Unorm);
-			this.OutputSrv = D3D11.CreateSrv(device, this.output);
-			this.captureDesc = desc;
-		}
-		finally
-		{
-			D3D11.Release(device);
-		}
+		using ID3D11Device device = source.Device;
+		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1, BindFlags.ShaderResource));
+		this.captureSrv = device.CreateShaderResourceView(this.capture);
+		// RGBA: typed UAV stores on BGRA are optional in D3D11
+		this.output = device.CreateTexture2D(new Texture2DDescription(Format.R8G8B8A8_UNorm, desc.Width, desc.Height, 1, 1,
+			BindFlags.ShaderResource | BindFlags.UnorderedAccess));
+		this.outputUav = device.CreateUnorderedAccessView(this.output);
+		this.outputSrv = device.CreateShaderResourceView(this.output);
+		this.captureDesc = desc;
 	}
 
 	/// <summary>Render thread, takes the capture from OBS's own hook if it is loaded</summary>
-	private void PresentToObs(nint sourceTexture)
+	private void PresentToObs()
 	{
 		if (!this.obs.TryInit(takeOver: true))
 			return;
 
 		if (this.obsDevice == null)
 		{
-			nint device = D3D11.GetDevice(sourceTexture);
-			this.obsDevice = new D3D11GraphicsDevice(device); // takes its own reference
-			D3D11.Release(device);
+			using ID3D11Device device = this.gameContext.Device;
+			this.obsDevice = new D3D11GraphicsDevice(device.NativePointer); // takes its own reference
 		}
 
-		if (this.obsTexture == null)
-		{
-			using ID3D11Texture2D output = new(this.output);
-			output.AddRef(); // balanced by the using, the wrapper keeps its own reference
-			this.obsTexture = new D3D11GraphicsTexture(output);
-		}
-
+		this.obsTexture ??= new D3D11GraphicsTexture(this.output!); // takes its own reference
 		this.obs.Present(this.obsDevice, this.obsTexture, (nint)Device.Instance()->hWnd);
 		this.ObsStatus = !this.obs.IsCapturing
 			? "Waiting for OBS"
@@ -151,12 +146,16 @@ public sealed unsafe class FrameRenderer: IDisposable
 		// A resized output is wrapped again, the library starts a new capture on size change
 		this.obsTexture?.Dispose();
 		this.obsTexture = null;
-		D3D11.Release(this.OutputSrv);
-		D3D11.Release(this.outputUav);
-		D3D11.Release(this.output);
-		D3D11.Release(this.captureSrv);
-		D3D11.Release(this.capture);
-		this.OutputSrv = this.outputUav = this.output = this.captureSrv = this.capture = 0;
+		this.outputSrv?.Dispose();
+		this.outputUav?.Dispose();
+		this.output?.Dispose();
+		this.captureSrv?.Dispose();
+		this.capture?.Dispose();
+		this.outputSrv = null;
+		this.outputUav = null;
+		this.output = null;
+		this.captureSrv = null;
+		this.capture = null;
 		this.captureDesc = default;
 	}
 

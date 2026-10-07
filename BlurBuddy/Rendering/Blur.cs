@@ -3,7 +3,9 @@ using System.IO;
 using System.Runtime.InteropServices;
 
 using BlurBuddy.Capture;
-using BlurBuddy.Graphics;
+
+using Vortice.Direct3D11;
+using Vortice.DXGI;
 
 namespace BlurBuddy.Rendering;
 
@@ -45,138 +47,181 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		public float Strength;
 	}
 
-	private nint device;
-	private nint downsample, gaussian, composite, sampler;
-	private nint downsampleCb, gaussianCb, compositeCb;
-	private nint rects, rectsSrv;
-	private nint half, halfSrv, halfUav, temp, tempSrv, tempUav;
-	private uint halfWidth, halfHeight;
+	private Pipeline? pipeline;
+	private Targets? targets;
 
-	public void Run(nint context, nint captureSrv, nint outputUav, uint width, uint height, nint slotPointer)
+	public void Run(ID3D11DeviceContext context, ID3D11ShaderResourceView capture, ID3D11UnorderedAccessView output, uint width, uint height,
+		nint slotPointer)
 	{
 		FrameSlot* slot = (FrameSlot*)slotPointer;
-		this.EnsureResources(context, (width + 1) / 2, (height + 1) / 2);
+		uint halfWidth = (width + 1) / 2, halfHeight = (height + 1) / 2;
+		if (this.pipeline == null)
+		{
+			using ID3D11Device device = context.Device;
+			this.pipeline = new Pipeline(device);
+		}
 
+		if (this.targets == null || this.targets.Width != halfWidth || this.targets.Height != halfHeight)
+		{
+			this.targets?.Dispose();
+			using ID3D11Device device = context.Device;
+			this.targets = new Targets(device, halfWidth, halfHeight);
+		}
+
+		Pipeline p = this.pipeline;
+		Targets t = this.targets;
 		BlurStyle style = configuration.Style;
 		float strength = configuration.BlurStrength;
-		nint* none = stackalloc nint[3] { 0, 0, 0 };
-		nint* samplers = stackalloc nint[1] { this.sampler };
-		D3D11.SetSamplers(context, samplers, 1);
+		context.CSSetSampler(0, p.Sampler);
 
 		// Pixelate and crystallize sample the capture directly
 		if (style is BlurStyle.Gaussian or BlurStyle.Diamond)
-			this.Gaussian(context, captureSrv, strength);
+			Gaussian(context, p, t, capture, strength);
 
 		// Capture + half + rectangles -> output
 		uint count = (uint)Math.Min(slot->RectCount, FrameSlots.MaxRects);
 		if (count > 0)
-			D3D11.UploadBytes(context, this.rects, slot->Rects, count * 16);
-		D3D11.Upload(context, this.compositeCb, new CompositeConstants
+		{
+			MappedSubresource mapped = context.Map(p.Rects, MapMode.WriteDiscard);
+			Buffer.MemoryCopy(slot->Rects, (void*)mapped.DataPointer, count * 16, count * 16);
+			context.Unmap(p.Rects);
+		}
+
+		Upload(context, p.CompositeCb, new CompositeConstants
 		{
 			Width = width, Height = height, RectCount = count, WholeFrame = (uint)slot->WholeFrame, Feather = Feather,
 			Style = (uint)style, BlockSize = MathF.Max(2.0f, strength * PixelsPerStrength), Strength = strength,
 		});
-		this.Pass(context, this.composite, this.compositeCb, captureSrv, this.halfSrv, this.rectsSrv, outputUav, width, height);
+		Pass(context, p.Composite, p.CompositeCb, capture, t.HalfSrv, p.RectsSrv, output, width, height);
 
-		D3D11.SetShaderResources(context, none, 3);
-		D3D11.SetUnorderedAccessViews(context, none, 1);
-		D3D11.SetShader(context, 0);
+		context.CSUnsetShaderResources(0, 3);
+		context.CSSetShader(null);
 	}
 
 	/// <summary>Capture -> half, horizontal half -> temp, vertical temp -> half</summary>
-	private void Gaussian(nint context, nint captureSrv, float strength)
+	private static void Gaussian(ID3D11DeviceContext context, Pipeline p, Targets t, ID3D11ShaderResourceView capture, float strength)
 	{
 		float sigma = Math.Clamp(strength, 0.5f, MaxRadius / 3.0f);
 		int radius = Math.Min(MaxRadius, (int)MathF.Ceiling(sigma * 3));
 
-		D3D11.Upload(context, this.downsampleCb, new DownsampleConstants
+		Upload(context, p.DownsampleCb, new DownsampleConstants
 		{
-			InvWidth = 1.0f / this.halfWidth, InvHeight = 1.0f / this.halfHeight, Width = this.halfWidth, Height = this.halfHeight,
+			InvWidth = 1.0f / t.Width, InvHeight = 1.0f / t.Height, Width = t.Width, Height = t.Height,
 		});
-		this.Pass(context, this.downsample, this.downsampleCb, captureSrv, 0, 0, this.halfUav, this.halfWidth, this.halfHeight);
+		Pass(context, p.Downsample, p.DownsampleCb, capture, null, null, t.HalfUav, t.Width, t.Height);
 
-		D3D11.Upload(context, this.gaussianCb, new GaussianConstants
-		{
-			DirectionX = 1, Width = this.halfWidth, Height = this.halfHeight, Sigma = sigma, Radius = radius,
-		});
-		this.Pass(context, this.gaussian, this.gaussianCb, this.halfSrv, 0, 0, this.tempUav, this.halfWidth, this.halfHeight);
-		D3D11.Upload(context, this.gaussianCb, new GaussianConstants
-		{
-			DirectionY = 1, Width = this.halfWidth, Height = this.halfHeight, Sigma = sigma, Radius = radius,
-		});
-		this.Pass(context, this.gaussian, this.gaussianCb, this.tempSrv, 0, 0, this.halfUav, this.halfWidth, this.halfHeight);
+		Upload(context, p.GaussianCb, new GaussianConstants { DirectionX = 1, Width = t.Width, Height = t.Height, Sigma = sigma, Radius = radius });
+		Pass(context, p.Gaussian, p.GaussianCb, t.HalfSrv, null, null, t.TempUav, t.Width, t.Height);
+		Upload(context, p.GaussianCb, new GaussianConstants { DirectionY = 1, Width = t.Width, Height = t.Height, Sigma = sigma, Radius = radius });
+		Pass(context, p.Gaussian, p.GaussianCb, t.TempSrv, null, null, t.HalfUav, t.Width, t.Height);
 	}
 
-	private void Pass(nint context, nint shader, nint constants, nint srv0, nint srv1, nint srv2, nint uav, uint width, uint height)
+	private static void Pass(ID3D11DeviceContext context, ID3D11ComputeShader shader, ID3D11Buffer constants, ID3D11ShaderResourceView srv0,
+		ID3D11ShaderResourceView? srv1, ID3D11ShaderResourceView? srv2, ID3D11UnorderedAccessView uav, uint width, uint height)
 	{
-		nint* none = stackalloc nint[3] { 0, 0, 0 };
-		nint* srvs = stackalloc nint[3] { srv0, srv1, srv2 };
-		nint* uavs = stackalloc nint[1] { uav };
-		nint* buffers = stackalloc nint[1] { constants };
-		D3D11.SetShaderResources(context, none, 3); // unbind before reusing a texture as UAV
-		D3D11.SetUnorderedAccessViews(context, uavs, 1);
-		D3D11.SetShaderResources(context, srvs, 3);
-		D3D11.SetConstantBuffers(context, buffers, 1);
-		D3D11.SetShader(context, shader);
-		D3D11.Dispatch(context, (width + 7) / 8, (height + 7) / 8);
-		D3D11.SetUnorderedAccessViews(context, none, 1);
+		context.CSUnsetShaderResources(0, 3); // unbind before reusing a texture as UAV
+		context.CSSetUnorderedAccessView(0, uav);
+		context.CSSetShaderResource(0, srv0);
+		context.CSSetShaderResource(1, srv1);
+		context.CSSetShaderResource(2, srv2);
+		context.CSSetConstantBuffer(0, constants);
+		context.CSSetShader(shader);
+		context.Dispatch(Math.Max(1, (width + 7) / 8), Math.Max(1, (height + 7) / 8), 1);
+		context.CSUnsetUnorderedAccessView(0);
 	}
 
-	private void EnsureResources(nint context, uint width, uint height)
+	private static void Upload<T>(ID3D11DeviceContext context, ID3D11Buffer buffer, in T value) where T : unmanaged
 	{
-		if (this.device == 0)
+		MappedSubresource mapped = context.Map(buffer, MapMode.WriteDiscard);
+		*(T*)mapped.DataPointer = value;
+		context.Unmap(buffer);
+	}
+
+	/// <summary>Shaders, sampler, constant and rectangle buffers</summary>
+	private sealed class Pipeline: IDisposable
+	{
+		public readonly ID3D11ComputeShader Downsample, Gaussian, Composite;
+		public readonly ID3D11SamplerState Sampler;
+		public readonly ID3D11Buffer DownsampleCb, GaussianCb, CompositeCb, Rects;
+		public readonly ID3D11ShaderResourceView RectsSrv;
+
+		public Pipeline(ID3D11Device device)
 		{
-			this.device = D3D11.GetDevice(context);
-			this.downsample = D3D11.CreateComputeShader(this.device, Load("downsample"));
-			this.gaussian = D3D11.CreateComputeShader(this.device, Load("gaussian"));
-			this.composite = D3D11.CreateComputeShader(this.device, Load("composite"));
-			this.sampler = D3D11.CreateSampler(this.device, true);
-			this.downsampleCb = D3D11.CreateConstantBuffer(this.device, (uint)sizeof(DownsampleConstants));
-			this.gaussianCb = D3D11.CreateConstantBuffer(this.device, (uint)sizeof(GaussianConstants));
-			this.compositeCb = D3D11.CreateConstantBuffer(this.device, (uint)sizeof(CompositeConstants));
-			this.rects = D3D11.CreateStructuredBuffer(this.device, FrameSlots.MaxRects, out this.rectsSrv);
+			this.Downsample = device.CreateComputeShader(Load("downsample"));
+			this.Gaussian = device.CreateComputeShader(Load("gaussian"));
+			this.Composite = device.CreateComputeShader(Load("composite"));
+			this.Sampler = device.CreateSamplerState(SamplerDescription.LinearClamp);
+			this.DownsampleCb = ConstantBuffer(device, sizeof(DownsampleConstants));
+			this.GaussianCb = ConstantBuffer(device, sizeof(GaussianConstants));
+			this.CompositeCb = ConstantBuffer(device, sizeof(CompositeConstants));
+			this.Rects = device.CreateBuffer(new BufferDescription(FrameSlots.MaxRects * 16, BindFlags.ShaderResource, ResourceUsage.Dynamic,
+				CpuAccessFlags.Write, ResourceOptionFlags.BufferStructured, 16));
+			this.RectsSrv = device.CreateShaderResourceView(this.Rects,
+				new ShaderResourceViewDescription(this.Rects, Format.Unknown, 0, FrameSlots.MaxRects));
 		}
 
-		if (width == this.halfWidth && height == this.halfHeight)
-			return;
+		private static ID3D11Buffer ConstantBuffer(ID3D11Device device, int size) =>
+			device.CreateBuffer(new BufferDescription(((uint)size + 15) & ~15u, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
 
-		this.ReleaseTargets();
-		const uint bind = D3D11.BindShaderResource | D3D11.BindUnorderedAccess;
-		this.half = D3D11.CreateTexture(this.device, width, height, D3D11.FormatR16G16B16A16Float, 1, bind);
-		this.halfSrv = D3D11.CreateSrv(this.device, this.half);
-		this.halfUav = D3D11.CreateUav(this.device, this.half, D3D11.FormatR16G16B16A16Float);
-		this.temp = D3D11.CreateTexture(this.device, width, height, D3D11.FormatR16G16B16A16Float, 1, bind);
-		this.tempSrv = D3D11.CreateSrv(this.device, this.temp);
-		this.tempUav = D3D11.CreateUav(this.device, this.temp, D3D11.FormatR16G16B16A16Float);
-		this.halfWidth = width;
-		this.halfHeight = height;
+		private static byte[] Load(string name)
+		{
+			using Stream stream = typeof(Blur).Assembly.GetManifestResourceStream($"Shaders.{name}.cso") ??
+			                      throw new InvalidOperationException($"missing resource Shaders.{name}.cso");
+			using MemoryStream memory = new();
+			stream.CopyTo(memory);
+			return memory.ToArray();
+		}
+
+		public void Dispose()
+		{
+			this.RectsSrv.Dispose();
+			this.Rects.Dispose();
+			this.CompositeCb.Dispose();
+			this.GaussianCb.Dispose();
+			this.DownsampleCb.Dispose();
+			this.Sampler.Dispose();
+			this.Composite.Dispose();
+			this.Gaussian.Dispose();
+			this.Downsample.Dispose();
+		}
 	}
 
-	private static byte[] Load(string name)
+	/// <summary>Half resolution blur textures</summary>
+	private sealed class Targets: IDisposable
 	{
-		using Stream stream = typeof(Blur).Assembly.GetManifestResourceStream($"Shaders.{name}.cso") ??
-		                      throw new InvalidOperationException($"missing resource Shaders.{name}.cso");
-		using MemoryStream memory = new();
-		stream.CopyTo(memory);
-		return memory.ToArray();
-	}
+		public readonly uint Width, Height;
+		public readonly ID3D11Texture2D Half, Temp;
+		public readonly ID3D11ShaderResourceView HalfSrv, TempSrv;
+		public readonly ID3D11UnorderedAccessView HalfUav, TempUav;
 
-	private void ReleaseTargets()
-	{
-		foreach (nint o in new[] { this.halfUav, this.halfSrv, this.half, this.tempUav, this.tempSrv, this.temp })
-			D3D11.Release(o);
-		this.halfUav = this.halfSrv = this.half = this.tempUav = this.tempSrv = this.temp = 0;
-		this.halfWidth = this.halfHeight = 0;
+		public Targets(ID3D11Device device, uint width, uint height)
+		{
+			this.Width = width;
+			this.Height = height;
+			Texture2DDescription desc = new(Format.R16G16B16A16_Float, Math.Max(1, width), Math.Max(1, height), 1, 1,
+				BindFlags.ShaderResource | BindFlags.UnorderedAccess);
+			this.Half = device.CreateTexture2D(desc);
+			this.HalfSrv = device.CreateShaderResourceView(this.Half);
+			this.HalfUav = device.CreateUnorderedAccessView(this.Half);
+			this.Temp = device.CreateTexture2D(desc);
+			this.TempSrv = device.CreateShaderResourceView(this.Temp);
+			this.TempUav = device.CreateUnorderedAccessView(this.Temp);
+		}
+
+		public void Dispose()
+		{
+			this.HalfUav.Dispose();
+			this.HalfSrv.Dispose();
+			this.Half.Dispose();
+			this.TempUav.Dispose();
+			this.TempSrv.Dispose();
+			this.Temp.Dispose();
+		}
 	}
 
 	public void Dispose()
 	{
-		this.ReleaseTargets();
-		foreach (nint o in new[]
-		         {
-			         this.rectsSrv, this.rects, this.compositeCb, this.gaussianCb, this.downsampleCb, this.sampler, this.composite,
-			         this.gaussian, this.downsample, this.device,
-		         })
-			D3D11.Release(o);
+		this.targets?.Dispose();
+		this.pipeline?.Dispose();
 	}
 }
