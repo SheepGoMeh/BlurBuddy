@@ -1,0 +1,10 @@
+{
+  "Author": "SheepGoMeh",
+  "Name": "BlurBuddy",
+  "InternalName": "BlurBuddy",
+  "Description": "A streamer's best friend: becomes OBS's Game Capture source and sends the game without UI, with nameplates only, or with all game UI, with nameplates and chosen windows blurred. Your own screen is never changed.\nOpen the settings with /blurbuddy",
+  "Punchline": "Blur game UI on stream, not on your screen.",
+  "Tags": ["Streaming", "OBS", "Blur", "Privacy"],
+  "ApplicableVersion": "any",
+  "IconUrl": "https://raw.githubusercontent.com/SheepGoMeh/BlurBuddy/main/images/icon.png"
+}
