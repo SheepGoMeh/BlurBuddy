@@ -1,0 +1,7 @@
+<Solution>
+	<Configurations>
+		<Platform Name="x64" />
+	</Configurations>
+	<Project Path="BlurBuddy/BlurBuddy.csproj" />
+	<Project Path="OBSHookLibrary/OBSHookLibrary.csproj" />
+</Solution>

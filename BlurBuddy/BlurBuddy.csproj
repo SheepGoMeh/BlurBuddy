@@ -1,0 +1,24 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+	<PropertyGroup>
+		<AssemblyVersion>0.1.0.0</AssemblyVersion>
+		<FileVersion>$(AssemblyVersion)</FileVersion>
+		<IsPackable>false</IsPackable>
+		<Authors>SheepGoMeh</Authors>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+	</PropertyGroup>
+	<PropertyGroup>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<SignAssembly>false</SignAssembly>
+	</PropertyGroup>
+	<ItemGroup>
+		<!-- Built by Shaders/Build-Shaders.ps1 -->
+		<EmbeddedResource Include="Shaders\Compiled\*.cso" LogicalName="Shaders.%(Filename)%(Extension)" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\OBSHookLibrary\OBSHookLibrary.csproj" />
+	</ItemGroup>
+	<Target Name="CheckShaders" BeforeTargets="BeforeBuild" Condition="!Exists('Shaders\Compiled\composite.cso')">
+		<Error Text="Shaders\Compiled is empty, run Shaders\Build-Shaders.ps1" />
+	</Target>
+</Project>

@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+.superpowers/
+BlurBuddy/Shaders/Compiled/
+docs/
+BlurBuddy.Tests/
