@@ -17,6 +17,7 @@
 	</ItemGroup>
 	<ItemGroup>
 		<ProjectReference Include="..\OBSHookLibrary\OBSHookLibrary.csproj" />
+		<PackageReference Include="Vortice.Vulkan" Version="3.3.0" />
 	</ItemGroup>
 	<Target Name="CheckShaders" BeforeTargets="BeforeBuild" Condition="!Exists('Shaders\Compiled\composite.cso')">
 		<Error Text="Shaders\Compiled is empty, run Shaders\Build-Shaders.ps1" />

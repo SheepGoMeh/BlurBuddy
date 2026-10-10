@@ -23,6 +23,8 @@ public class BlurBuddyPlugin: IDalamudPlugin
 	private readonly UiCapture uiCapture;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
+	private VkCapture? vkCapture;
+	private bool vkTried;
 
 	public BlurBuddyPlugin(IDalamudPluginInterface pluginInterface)
 	{
@@ -56,7 +58,30 @@ public class BlurBuddyPlugin: IDalamudPlugin
 		Service.Framework.Update += this.OnFrameworkUpdate;
 	}
 
-	private void OnFrameworkUpdate(IFramework framework) => this.uiCapture.Update();
+	private void OnFrameworkUpdate(IFramework framework)
+	{
+		this.uiCapture.Update();
+		if (this.configuration.VulkanCapture && !this.vkTried)
+		{
+			this.vkTried = true;
+			this.vkCapture = VkCapture.TryCreate();
+			this.frameRenderer.SetVulkan(this.vkCapture);
+		}
+		else if (!this.configuration.VulkanCapture && this.vkTried)
+		{
+			this.StopVulkan();
+		}
+
+		this.vkCapture?.Update(this.frameRenderer.OutputWidth, this.frameRenderer.OutputHeight);
+	}
+
+	private void StopVulkan()
+	{
+		this.frameRenderer.SetVulkan(null);
+		this.vkCapture?.Dispose();
+		this.vkCapture = null;
+		this.vkTried = false;
+	}
 
 	protected virtual void Dispose(bool disposing)
 	{
@@ -72,7 +97,11 @@ public class BlurBuddyPlugin: IDalamudPlugin
 		this.windowSystem.RemoveAllWindows();
 
 		// Queued callbacks reference the renderer and the slots
-		Service.Framework.RunOnFrameworkThread(this.uiCapture.Stop).Wait();
+		Service.Framework.RunOnFrameworkThread(() =>
+		{
+			this.uiCapture.Stop();
+			this.StopVulkan(); // owns a window of this thread
+		}).Wait();
 		Thread.Sleep(200);
 		this.frameRenderer.StopObs();
 		this.uiCapture.Dispose();
