@@ -57,14 +57,14 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		uint halfWidth = (width + 1) / 2, halfHeight = (height + 1) / 2;
 		if (this.pipeline == null)
 		{
-			using ID3D11Device device = context.Device;
+			ID3D11Device device = context.Device; // cached by the wrapper, released when it is repointed
 			this.pipeline = new Pipeline(device);
 		}
 
 		if (this.targets == null || this.targets.Width != halfWidth || this.targets.Height != halfHeight)
 		{
 			this.targets?.Dispose();
-			using ID3D11Device device = context.Device;
+			ID3D11Device device = context.Device; // cached by the wrapper, released when it is repointed
 			this.targets = new Targets(device, halfWidth, halfHeight);
 		}
 
