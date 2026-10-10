@@ -242,6 +242,16 @@ public sealed unsafe class NameplateLayer: IDisposable
 	private static uint Transmittance(uint key)
 	{
 		PackedBlendStateDesc desc = *(PackedBlendStateDesc*)&key;
+
+		// No colour written, nothing covered: DoClearCommandViaDraw masks the colour off (key & 0xF87FFFFF) to clear only depth
+		// or stencil, a full screen quad that must not touch the transmittance either
+		const byte rgb = (byte)(ColorWriteEnable.Red | ColorWriteEnable.Green | ColorWriteEnable.Blue);
+		if ((desc.RenderTargetWriteMask & rgb) == 0)
+		{
+			desc.RenderTargetWriteMask = 0;
+			return *(uint*)&desc;
+		}
+
 		if (!desc.BlendEnable)
 		{
 			desc.BlendEnable = true;
