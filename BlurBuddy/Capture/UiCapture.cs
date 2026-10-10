@@ -13,7 +13,7 @@ using BlurBuddy.Tracking;
 namespace BlurBuddy.Capture;
 
 /// <summary>
-/// Queues the capture callback after ToneAdjust, once a frame, and the nameplate layer's flush in front of the 2D UI's bind
+/// Queues the capture callback after ToneAdjust, once a frame, and the plate capture's callback in front of the 2D UI's bind
 /// </summary>
 public sealed unsafe class UiCapture: IDisposable
 {
@@ -30,7 +30,7 @@ public sealed unsafe class UiCapture: IDisposable
 	private delegate void PushBackDelegate(Context* context, void* command);
 
 	private readonly BlurBuddyConfiguration configuration;
-	private readonly NameplateLayer layer;
+	private readonly PlateCapture plates;
 	private readonly FrameSlots slots = new();
 	private readonly LoadingFade loadingFade = new();
 	private readonly Hook<AtkServer.Delegates.Draw> draw;
@@ -44,10 +44,10 @@ public sealed unsafe class UiCapture: IDisposable
 	private bool uiBindSeen;
 	private Texture* final; // this frame's, see FinalTarget
 
-	public UiCapture(BlurBuddyConfiguration configuration, NameplateLayer layer)
+	public UiCapture(BlurBuddyConfiguration configuration, PlateCapture plates)
 	{
 		this.configuration = configuration;
-		this.layer = layer;
+		this.plates = plates;
 		this.set = configuration.Set;
 		this.Tracker = new ElementTracker(configuration);
 		this.draw = Service.GameInteropProvider.HookFromAddress<AtkServer.Delegates.Draw>(
@@ -85,11 +85,11 @@ public sealed unsafe class UiCapture: IDisposable
 		return swapChain == null ? null : swapChain->BackBuffer;
 	}
 
-	/// <summary>Main thread: the layer for this frame's final target; the 2D UI's bind is found while the UI is built</summary>
+	/// <summary>Main thread: this frame's final target for the plate capture; the 2D UI's bind is found while the UI is built</summary>
 	private void DrawDetour(AtkServer* server, bool flag)
 	{
 		this.final = FinalTarget();
-		this.layer.Prepare(this.final);
+		this.plates.Prepare(this.final);
 		this.drawing = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		this.uiBindSeen = false;
 		this.uiDrawn = true;
@@ -100,13 +100,13 @@ public sealed unsafe class UiCapture: IDisposable
 	private void PushBackDetour(Context* context, void* command)
 	{
 		// In front of it with the same key: after the nameplates' draws, right before the 2D UI's. AtkServer.Draw binds
-		// RTM+0x570 as it is during the call, another plugin's UI layer included; the scene is still saved from the final target
+		// RTM+0x570 as it is during the call, another plugin's UI layer included
 		if (context == this.drawing && !this.uiBindSeen && ((RenderCommand*)command)->Type == RenderCommandType.SetTarget &&
 		    IsUiBind((RenderCommandSetTarget*)command))
 		{
 			this.uiBindSeen = true;
-			nint targets = this.layer.FlushArgument(this.final, ((RenderCommandSetTarget*)command)->RenderTargets[0].Value, this.set);
-			RenderCallback.Queue(&NameplateLayer.OnUiBegin, targets);
+			nint targets = this.plates.FlushArgument(this.final, ((RenderCommandSetTarget*)command)->RenderTargets[0].Value);
+			RenderCallback.Queue(&PlateCapture.OnUiBegin, targets);
 		}
 
 		this.pushBack.Original(context, command);

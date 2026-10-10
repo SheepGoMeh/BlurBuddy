@@ -94,7 +94,7 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 			return;
 
 		this.MarkPlayerPlates();
-		// Plates drawn in the depth tested nameplate pass first: the composite blurs them only where the layer has them
+		// Plates of the depth tested nameplate pass first: the composite blurs them only where a plate drew
 		for (int i = 0; i < NamePlateCount; i++)
 		{
 			if (!this.plateTargeted[i])
@@ -103,7 +103,7 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 
 		slot->PlateCount = slot->RectCount;
 
-		// The (soft) target's plate shows through walls, it isn't in the layer: its whole rectangle
+		// The (soft) target's plate shows through walls, it may not be drawn in that pass: its whole rectangle
 		for (int i = 0; i < NamePlateCount; i++)
 		{
 			if (this.plateTargeted[i])

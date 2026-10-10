@@ -18,7 +18,7 @@ public class BlurBuddyPlugin: IDalamudPlugin
 	private const string CommandName = "/blurbuddy";
 
 	private readonly BlurBuddyConfiguration configuration;
-	private readonly NameplateLayer nameplateLayer;
+	private readonly PlateCapture plateCapture;
 	private readonly FrameRenderer frameRenderer;
 	private readonly Blur blur;
 	private readonly UiCapture uiCapture;
@@ -40,11 +40,11 @@ public class BlurBuddyPlugin: IDalamudPlugin
 			this.configuration.Rules.Add(new UiRule { Addon = "_TargetCursor" });
 			this.configuration.Version = 1;
 		}
-		this.nameplateLayer = new NameplateLayer();
-		this.frameRenderer = new FrameRenderer(this.nameplateLayer);
+		this.plateCapture = new PlateCapture();
+		this.frameRenderer = new FrameRenderer(this.plateCapture);
 		this.blur = new Blur(this.configuration);
 		this.frameRenderer.Composite = this.blur.Run;
-		this.uiCapture = new UiCapture(this.configuration, this.nameplateLayer);
+		this.uiCapture = new UiCapture(this.configuration, this.plateCapture);
 
 		this.windowSystem = new WindowSystem("BlurBuddy");
 		PickerWindow picker = new(this.configuration, this.uiCapture.Tracker);
@@ -102,14 +102,14 @@ public class BlurBuddyPlugin: IDalamudPlugin
 		Service.Framework.RunOnFrameworkThread(() =>
 		{
 			this.uiCapture.Stop();
-			this.nameplateLayer.Stop();
+			this.plateCapture.Stop();
 			this.StopVulkan(); // owns a window of this thread
 		}).Wait();
 		Thread.Sleep(200);
 		this.frameRenderer.StopObs();
 		this.uiCapture.Dispose();
 		this.frameRenderer.Dispose();
-		this.nameplateLayer.Dispose();
+		this.plateCapture.Dispose();
 		this.blur.Dispose();
 	}
 

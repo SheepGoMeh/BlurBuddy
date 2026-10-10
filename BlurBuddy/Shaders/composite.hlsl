@@ -1,9 +1,10 @@
 // Capture outside the rectangles, the selected effect inside, feathered edge
-// Nameplate rectangles (the first PlateCount) only where the nameplate layer has coverage: occluded parts stay clear
+// Nameplate rectangles (the first PlateCount) only where a plate drew: occluded parts stay clear
 Texture2D<float4> Capture : register(t0);
 Texture2D<float4> Blurred : register(t1);
 StructuredBuffer<float4> Rects : register(t2); // left, top, right, bottom in pixels
-Texture2D<float4> Layer : register(t3); // nameplates added (rgb) and the scene's transmittance (a), depth tested
+Texture2D<float4> First : register(t3); // coverage 1: the scene before the plates; coverage 2: a premultiplied plate layer
+Texture2D<float4> Second : register(t4); // coverage 1: the scene with the plates
 RWTexture2D<float4> Output : register(u0);
 SamplerState Linear : register(s0);
 
@@ -17,18 +18,20 @@ cbuffer Constants : register(b0)
 	float BlockSize;
 	float Strength;
 	uint PlateCount;
-	uint HasLayer;
+	uint PlateCoverage; // 0 unknown (whole rectangles), 1 the scene's copies differ, 2 the plate layer
 	float CoverageRadius; // pixels the glyph coverage grows by, so the blur hides the text's shape too
 	float Fade; // black over everything, the loading screen the scene sets miss
 	float4 Keep; // left, top, right, bottom: shown as captured over the black, the game's loading indicator
 };
 
-// Whether a plate drew here at all: translucent plates (the game fades them while moving) are still readable, and additive
-// glows add colour without alpha; any of it is hidden in full
+// Whether a plate drew here at all, any of it hidden in full: translucent plates (the game fades them while moving) are still
+// readable, and additive glows add colour without alpha
 float Drawn(int2 q)
 {
-	float4 plate = Layer[q];
-	return max(1 - plate.a, max(plate.r, max(plate.g, plate.b))) > 2.0f / 255 ? 1 : 0;
+	float4 first = First[q];
+	// The copies' change, or the layer's own colour and coverage
+	float4 plate = PlateCoverage == 1 ? float4(abs(Second[q].rgb - first.rgb), 0) : first;
+	return max(plate.a, max(plate.r, max(plate.g, plate.b))) > 2.0f / 255 ? 1 : 0;
 }
 
 // Plate pixels in a 5x5 grid spanning CoverageRadius, soft at the grown edge
@@ -118,7 +121,7 @@ void CS(uint2 id : SV_DispatchThreadID)
 		float4 r = Rects[i];
 		float2 d = max(r.xy - p, p - r.zw);
 		float inside = saturate(1 - max(d.x, d.y) / Feather);
-		if (inside > 0 && i < PlateCount && HasLayer)
+		if (inside > 0 && i < PlateCount && PlateCoverage != 0)
 		{
 			if (coverage < 0)
 				coverage = Coverage(p);

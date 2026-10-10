@@ -48,7 +48,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		public float BlockSize;
 		public float Strength;
 		public uint PlateCount;
-		public uint HasLayer;
+		public uint PlateCoverage;
 		public float CoverageRadius;
 		public float Fade;
 		public ScreenRect Keep;
@@ -57,8 +57,9 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 	private Pipeline? pipeline;
 	private Targets? targets;
 
-	public void Run(ID3D11DeviceContext context, ID3D11ShaderResourceView capture, ID3D11ShaderResourceView? layer,
-		ID3D11UnorderedAccessView output, uint width, uint height, nint slotPointer)
+	public void Run(ID3D11DeviceContext context, ID3D11ShaderResourceView capture, FrameRenderer.Coverage coverage,
+		ID3D11ShaderResourceView? first, ID3D11ShaderResourceView? second, ID3D11UnorderedAccessView output, uint width, uint height,
+		nint slotPointer)
 	{
 		FrameSlot* slot = (FrameSlot*)slotPointer;
 		uint halfWidth = (width + 1) / 2, halfHeight = (height + 1) / 2;
@@ -98,13 +99,15 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		{
 			Width = width, Height = height, RectCount = count, WholeFrame = (uint)slot->WholeFrame, Feather = Feather,
 			Style = (uint)style, BlockSize = MathF.Max(2.0f, strength * PixelsPerStrength), Strength = strength,
-			PlateCount = (uint)Math.Min(slot->PlateCount, (int)count), HasLayer = layer != null ? 1u : 0u, CoverageRadius = CoverageRadius,
+			PlateCount = (uint)Math.Min(slot->PlateCount, (int)count), PlateCoverage = (uint)coverage, CoverageRadius = CoverageRadius,
 			Fade = slot->Fade, Keep = slot->Indicator,
 		});
-		context.CSSetShaderResource(3, layer); // Pass binds and unbinds 0-2
+		// Pass binds and unbinds 0-2
+		context.CSSetShaderResource(3, coverage == FrameRenderer.Coverage.None ? null : first);
+		context.CSSetShaderResource(4, coverage == FrameRenderer.Coverage.Difference ? second : null);
 		Pass(context, p.Composite, p.CompositeCb, capture, t.HalfSrv, p.RectsSrv, output, width, height);
 
-		context.CSUnsetShaderResources(0, 4);
+		context.CSUnsetShaderResources(0, 5);
 		context.CSSetShader(null);
 	}
 

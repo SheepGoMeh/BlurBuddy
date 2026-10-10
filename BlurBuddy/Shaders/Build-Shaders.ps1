@@ -1,4 +1,4 @@
-# Compiles the blur passes (cs_5_0) and the layer composite (vs_5_0, ps_5_0) into Shaders/Compiled
+# Compiles the blur passes (cs_5_0) and the plate overlay (vs_5_0, ps_5_0) into Shaders/Compiled
 param(
 	[string]$Fxc = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
 )
