@@ -1,7 +1,9 @@
 // Capture outside the rectangles, the selected effect inside, feathered edge
+// Nameplate rectangles (the first PlateCount) only where the nameplate layer has coverage: occluded parts stay clear
 Texture2D<float4> Capture : register(t0);
 Texture2D<float4> Blurred : register(t1);
 StructuredBuffer<float4> Rects : register(t2); // left, top, right, bottom in pixels
+Texture2D<float4> Layer : register(t3); // premultiplied nameplates, depth tested against the scene
 RWTexture2D<float4> Output : register(u0);
 SamplerState Linear : register(s0);
 
@@ -14,7 +16,27 @@ cbuffer Constants : register(b0)
 	uint Style; // 0 gaussian, 1 pixelate, 2 crystallize, 3 diamond glass
 	float BlockSize;
 	float Strength;
+	uint PlateCount;
+	uint HasLayer;
+	float CoverageRadius; // pixels the glyph coverage grows by, so the blur hides the text's shape too
+	float Padding0;
 };
+
+// Highest layer alpha in a 5x5 grid spanning CoverageRadius, soft at the grown edge
+float Coverage(float2 p)
+{
+	float coverage = 0;
+	for (int y = -2; y <= 2; y++)
+	{
+		for (int x = -2; x <= 2; x++)
+		{
+			int2 q = clamp(int2(p + float2(x, y) * (CoverageRadius / 2)), 0, int2(Size) - 1);
+			float falloff = 1 - 0.25f * max(abs(x), abs(y)) / 2;
+			coverage = max(coverage, Layer[q].a * falloff);
+		}
+	}
+	return saturate(coverage * 4);
+}
 
 float3 Pixelate(float2 p)
 {
@@ -74,12 +96,20 @@ void CS(uint2 id : SV_DispatchThreadID)
 		return;
 	float2 p = id + 0.5f;
 	float mask = WholeFrame;
+	float coverage = -1; // per pixel, only inside a nameplate rectangle
 	// ponytail: every pixel tests every rectangle; tile binning if this shows up in GPU time
 	for (uint i = 0; i < RectCount && mask < 1; i++)
 	{
 		float4 r = Rects[i];
 		float2 d = max(r.xy - p, p - r.zw);
-		mask = max(mask, saturate(1 - max(d.x, d.y) / Feather));
+		float inside = saturate(1 - max(d.x, d.y) / Feather);
+		if (inside > 0 && i < PlateCount && HasLayer)
+		{
+			if (coverage < 0)
+				coverage = Coverage(p);
+			inside *= coverage;
+		}
+		mask = max(mask, inside);
 	}
 
 	float4 colour = Capture[id];

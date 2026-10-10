@@ -9,6 +9,8 @@ public unsafe struct FrameSlot
 {
 	public int RectCount;
 	public int WholeFrame;
+	public int PlateCount; // the first rects are nameplates, blurred only where the nameplate layer has coverage
+	public int AfterUiBind; // queued in a UI pass whose 2D UI bind got the layer flush, which saved the scene
 	public nint Target; // Kernel::Texture the UI pass renders into, read when the capture is queued
 	public fixed float Rects[FrameSlots.MaxRects * 4]; // left, top, right, bottom in pixels
 }
@@ -28,6 +30,8 @@ public sealed unsafe class FrameSlots: IDisposable
 		this.next = (this.next + 1) % SlotCount;
 		slot->RectCount = 0;
 		slot->WholeFrame = 0;
+		slot->PlateCount = 0;
+		slot->AfterUiBind = 0;
 		return slot;
 	}
 

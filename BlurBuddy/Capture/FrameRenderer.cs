@@ -11,7 +11,7 @@ using Vortice.DXGI;
 namespace BlurBuddy.Capture;
 
 /// <summary>
-/// Render thread: copies the final target, blurs, writes the shared output texture
+/// Render thread: copies the final target (or the scene saved before the 2D UI), blurs, writes the shared output texture
 /// </summary>
 public sealed unsafe class FrameRenderer: IDisposable
 {
@@ -21,6 +21,10 @@ public sealed unsafe class FrameRenderer: IDisposable
 	// Game owned, pointed at per use and cleared after: the wrappers' finalizers would release them
 	private readonly ID3D11DeviceContext gameContext = new(0);
 	private readonly ID3D11Texture2D gameTexture = new(0);
+	private readonly ID3D11ShaderResourceView layerView = new(0);
+	private readonly BlurBuddyConfiguration configuration;
+	private readonly NameplateLayer layer;
+	private uint savedFrame = uint.MaxValue; // UI pass whose scene the capture holds, saved before the 2D UI
 	private Texture2DDescription captureDesc;
 	private ID3D11Texture2D? capture;
 	private ID3D11ShaderResourceView? captureSrv;
@@ -28,7 +32,13 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private ID3D11UnorderedAccessView? outputUav;
 	private ID3D11ShaderResourceView? outputSrv;
 
-	public FrameRenderer() => instance = this;
+	public FrameRenderer(BlurBuddyConfiguration configuration, NameplateLayer layer)
+	{
+		this.configuration = configuration;
+		this.layer = layer;
+		layer.SceneReady = this.SaveScene;
+		instance = this;
+	}
 
 	private readonly Sheep.OBSHookLibrary.Capture obs = new();
 	private D3D11GraphicsDevice? obsDevice;
@@ -46,8 +56,9 @@ public sealed unsafe class FrameRenderer: IDisposable
 
 	public uint OutputHeight => this.captureDesc.Height;
 
-	/// <summary>Context, capture SRV, output UAV, width, height, frame slot</summary>
-	public Action<ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11UnorderedAccessView, uint, uint, nint>? Composite { get; set; }
+	/// <summary>Context, capture SRV, nameplate layer SRV (null without plates this frame), output UAV, width, height, frame slot</summary>
+	public Action<ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11ShaderResourceView?, ID3D11UnorderedAccessView, uint, uint, nint>?
+		Composite { get; set; }
 
 	[UnmanagedCallersOnly]
 	public static void OnRender(nint slot)
@@ -71,17 +82,59 @@ public sealed unsafe class FrameRenderer: IDisposable
 
 		lock (this.resourceLock)
 		{
+			// Plates drawn without a 2D UI bind after them (UI pass skipped): back on the screen now
+			this.layer.FlushPending((nint)source);
+			Texture* plates = (Texture*)this.layer.Drawn;
 			this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
 			this.gameTexture.NativePointer = (nint)source->D3D11Texture2D;
+			this.layerView.NativePointer = plates == null ? 0 : (nint)plates->D3D11ShaderResourceView;
+			try
+			{
+				this.EnsureTextures(this.gameTexture);
+				// Every capture of the frame keeps the saved scene, the final target has the 2D UI by now
+				if (((FrameSlot*)slot)->AfterUiBind == 0 || this.savedFrame != this.layer.Frame)
+					this.gameContext.CopyResource(this.capture, this.gameTexture);
+				if (this.Composite != null)
+				{
+					this.Composite(this.gameContext, this.captureSrv!, this.layerView.NativePointer == 0 ? null : this.layerView, this.outputUav!,
+						this.captureDesc.Width, this.captureDesc.Height, slot);
+				}
+				else
+				{
+					this.gameContext.CopyResource(this.output, this.capture);
+				}
+
+				this.PresentToObs();
+			}
+			finally
+			{
+				this.layerView.NativePointer = 0;
+				this.gameContext.NativePointer = 0;
+				this.gameTexture.NativePointer = 0;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Render thread, before the 2D UI: the stream's source when it shows no UI, before the plates are drawn back (scene only)
+	/// or after (scene and nameplates)
+	/// </summary>
+	private void SaveScene(nint final, bool withPlates)
+	{
+		CaptureSet set = this.configuration.Set;
+		Texture* texture = (Texture*)final;
+		if (set == CaptureSet.Ui || withPlates != (set == CaptureSet.Nameplates) || texture->D3D11Texture2D == null)
+			return;
+
+		lock (this.resourceLock)
+		{
+			this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
+			this.gameTexture.NativePointer = (nint)texture->D3D11Texture2D;
 			try
 			{
 				this.EnsureTextures(this.gameTexture);
 				this.gameContext.CopyResource(this.capture, this.gameTexture);
-				if (this.Composite != null)
-					this.Composite(this.gameContext, this.captureSrv!, this.outputUav!, this.captureDesc.Width, this.captureDesc.Height, slot);
-				else
-					this.gameContext.CopyResource(this.output, this.capture);
-				this.PresentToObs();
+				this.savedFrame = this.layer.Frame;
 			}
 			finally
 			{

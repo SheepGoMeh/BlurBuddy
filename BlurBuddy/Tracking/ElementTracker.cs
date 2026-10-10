@@ -63,6 +63,7 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 			float width = device->Width, height = device->Height;
 			if (configuration.BlurNameplates)
 				this.CollectNameplates(slot, width, height);
+			slot->PlateCount = slot->RectCount;
 			if (set == CaptureSet.Ui)
 				this.CollectModules(slot, width, height);
 			this.Status = slot->WholeFrame != 0 ? "Too many elements, blurring the whole frame" : "";
