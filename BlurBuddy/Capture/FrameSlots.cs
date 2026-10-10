@@ -13,6 +13,7 @@ public unsafe struct FrameSlot
 	public int WholeFrame;
 	public int PlateCount; // the first rects are nameplates, blurred only where the nameplate layer has coverage
 	public int AfterUiBind; // queued in a UI pass whose 2D UI bind got the layer flush, which saved the scene
+	public CaptureSet Set; // what the frame was tracked for: a set change reaches the render thread frames later
 	public float Fade; // black over the stream, 0 to 1: the loading screen the scene sets don't capture
 	public ScreenRect Indicator; // the game's loading indicator, kept from the final target over the black
 	public nint Target; // Kernel::Texture the UI pass renders into, read when the capture is queued

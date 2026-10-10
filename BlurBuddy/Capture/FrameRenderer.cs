@@ -25,7 +25,6 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private readonly ID3D11DeviceContext gameContext = new(0);
 	private readonly ID3D11Texture2D gameTexture = new(0);
 	private readonly ID3D11ShaderResourceView layerView = new(0);
-	private readonly BlurBuddyConfiguration configuration;
 	private readonly NameplateLayer layer;
 	private uint savedFrame = uint.MaxValue; // UI pass whose scene the capture holds, saved before the 2D UI
 	private Texture2DDescription captureDesc;
@@ -36,9 +35,8 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private ID3D11UnorderedAccessView? outputUav;
 	private ID3D11ShaderResourceView? outputSrv;
 
-	public FrameRenderer(BlurBuddyConfiguration configuration, NameplateLayer layer)
+	public FrameRenderer(NameplateLayer layer)
 	{
-		this.configuration = configuration;
 		this.layer = layer;
 		layer.SceneReady = this.SaveScene;
 		instance = this;
@@ -87,7 +85,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 		lock (this.resourceLock)
 		{
 			// Plates drawn without a 2D UI bind after them (UI pass skipped): back on the screen now
-			this.layer.FlushPending((nint)source);
+			this.layer.FlushPending((nint)source, ((FrameSlot*)slot)->Set);
 			Texture* plates = (Texture*)this.layer.Drawn;
 			this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
 			this.gameTexture.NativePointer = (nint)source->D3D11Texture2D;
@@ -97,7 +95,8 @@ public sealed unsafe class FrameRenderer: IDisposable
 				this.EnsureTextures(this.gameTexture);
 				// Every capture of the frame keeps the saved scene, the final target has the 2D UI by now
 				FrameSlot* frame = (FrameSlot*)slot;
-				if (frame->AfterUiBind == 0 || this.savedFrame != this.layer.Frame)
+				// The UI set's rects cover the UI, any other set's frame must not take the final target with it
+				if (frame->Set == CaptureSet.Ui || frame->AfterUiBind == 0 || this.savedFrame != this.layer.Frame)
 					this.gameContext.CopyResource(this.capture, this.gameTexture);
 				else if (!frame->Indicator.IsEmpty)
 				{
@@ -133,9 +132,8 @@ public sealed unsafe class FrameRenderer: IDisposable
 	/// over our copy for scene and nameplates. Over the copy, not taken back from the final target: under frame generation
 	/// the plates go into UpscaleBuddy's UI layer with the 2D UI and the final target never has them
 	/// </summary>
-	private void SaveScene(nint final)
+	private void SaveScene(nint final, CaptureSet set)
 	{
-		CaptureSet set = this.configuration.Set;
 		Texture* texture = (Texture*)final;
 		if (set == CaptureSet.Ui || texture->D3D11Texture2D == null)
 			return;
