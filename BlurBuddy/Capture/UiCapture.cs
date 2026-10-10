@@ -105,7 +105,8 @@ public sealed unsafe class UiCapture: IDisposable
 		    IsUiBind((RenderCommandSetTarget*)command))
 		{
 			this.uiBindSeen = true;
-			RenderCallback.Queue(&NameplateLayer.OnUiBegin, (nint)this.final);
+			nint targets = this.layer.FlushArgument(this.final, ((RenderCommandSetTarget*)command)->RenderTargets[0].Value);
+			RenderCallback.Queue(&NameplateLayer.OnUiBegin, targets);
 		}
 
 		this.pushBack.Original(context, command);

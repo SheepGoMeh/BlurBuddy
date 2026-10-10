@@ -31,6 +31,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private Texture2DDescription captureDesc;
 	private ID3D11Texture2D? capture;
 	private ID3D11ShaderResourceView? captureSrv;
+	private ID3D11RenderTargetView? captureRtv; // the nameplates are drawn over the saved scene through it
 	private ID3D11Texture2D? output;
 	private ID3D11UnorderedAccessView? outputUav;
 	private ID3D11ShaderResourceView? outputSrv;
@@ -128,14 +129,15 @@ public sealed unsafe class FrameRenderer: IDisposable
 	}
 
 	/// <summary>
-	/// Render thread, before the 2D UI: the stream's source when it shows no UI, before the plates are drawn back (scene only)
-	/// or after (scene and nameplates)
+	/// Render thread, before the 2D UI: the stream's source when it shows no UI, the scene, with this frame's plates drawn
+	/// over our copy for scene and nameplates. Over the copy, not taken back from the final target: under frame generation
+	/// the plates go into UpscaleBuddy's UI layer with the 2D UI and the final target never has them
 	/// </summary>
-	private void SaveScene(nint final, bool withPlates)
+	private void SaveScene(nint final)
 	{
 		CaptureSet set = this.configuration.Set;
 		Texture* texture = (Texture*)final;
-		if (set == CaptureSet.Ui || withPlates != (set == CaptureSet.Nameplates) || texture->D3D11Texture2D == null)
+		if (set == CaptureSet.Ui || texture->D3D11Texture2D == null)
 			return;
 
 		lock (this.resourceLock)
@@ -146,6 +148,8 @@ public sealed unsafe class FrameRenderer: IDisposable
 			{
 				this.EnsureTextures(this.gameTexture);
 				this.gameContext.CopyResource(this.capture, this.gameTexture);
+				if (set == CaptureSet.Nameplates && this.captureRtv != null)
+					this.layer.DrawOver(this.captureRtv.NativePointer, this.captureDesc.Width, this.captureDesc.Height);
 				this.savedFrame = this.layer.Frame;
 			}
 			finally
@@ -166,8 +170,10 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.vulkan?.SetSource(0);
 		this.ReleaseTextures();
 		ID3D11Device device = source.Device; // cached by the wrapper, released when it is repointed
-		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1, BindFlags.ShaderResource));
+		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1,
+			BindFlags.ShaderResource | BindFlags.RenderTarget));
 		this.captureSrv = device.CreateShaderResourceView(this.capture);
+		this.captureRtv = device.CreateRenderTargetView(this.capture);
 		// RGBA: typed UAV stores on BGRA are optional in D3D11
 		this.output = device.CreateTexture2D(new Texture2DDescription(Format.R8G8B8A8_UNorm, desc.Width, desc.Height, 1, 1,
 			BindFlags.ShaderResource | BindFlags.UnorderedAccess));
@@ -230,11 +236,13 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.outputSrv?.Dispose();
 		this.outputUav?.Dispose();
 		this.output?.Dispose();
+		this.captureRtv?.Dispose();
 		this.captureSrv?.Dispose();
 		this.capture?.Dispose();
 		this.outputSrv = null;
 		this.outputUav = null;
 		this.output = null;
+		this.captureRtv = null;
 		this.captureSrv = null;
 		this.capture = null;
 		this.captureDesc = default;
