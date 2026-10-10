@@ -96,7 +96,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 			return;
 
 		this.ReleaseTextures();
-		using ID3D11Device device = source.Device;
+		ID3D11Device device = source.Device; // cached by the wrapper, released when it is repointed
 		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1, BindFlags.ShaderResource));
 		this.captureSrv = device.CreateShaderResourceView(this.capture);
 		// RGBA: typed UAV stores on BGRA are optional in D3D11
@@ -115,7 +115,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 
 		if (this.obsDevice == null)
 		{
-			using ID3D11Device device = this.gameContext.Device;
+			ID3D11Device device = this.gameContext.Device; // cached by the wrapper, released when it is repointed
 			this.obsDevice = new D3D11GraphicsDevice(device.NativePointer); // takes its own reference
 		}
 
