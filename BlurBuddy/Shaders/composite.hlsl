@@ -19,7 +19,7 @@ cbuffer Constants : register(b0)
 	uint PlateCount;
 	uint HasLayer;
 	float CoverageRadius; // pixels the glyph coverage grows by, so the blur hides the text's shape too
-	float Padding0;
+	float Fade; // black over everything, the loading screen the scene sets miss
 };
 
 // Highest layer alpha in a 5x5 grid spanning CoverageRadius, soft at the grown edge
@@ -115,7 +115,7 @@ void CS(uint2 id : SV_DispatchThreadID)
 	float4 colour = Capture[id];
 	if (mask <= 0)
 	{
-		Output[id] = float4(colour.rgb, 1);
+		Output[id] = float4(colour.rgb * (1 - Fade), 1);
 		return;
 	}
 
@@ -127,5 +127,5 @@ void CS(uint2 id : SV_DispatchThreadID)
 		case 3: hidden = Diamond(p); break;
 		default: hidden = Blurred.SampleLevel(Linear, p / Size, 0).rgb; break;
 	}
-	Output[id] = float4(lerp(colour.rgb, hidden, mask), 1);
+	Output[id] = float4(lerp(colour.rgb, hidden, mask) * (1 - Fade), 1);
 }
