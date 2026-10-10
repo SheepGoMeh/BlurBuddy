@@ -1,6 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
 
+using BlurBuddy.Tracking;
+
 namespace BlurBuddy.Capture;
 
 /// <summary>Per frame arguments of the render callback</summary>
@@ -12,6 +14,7 @@ public unsafe struct FrameSlot
 	public int PlateCount; // the first rects are nameplates, blurred only where the nameplate layer has coverage
 	public int AfterUiBind; // queued in a UI pass whose 2D UI bind got the layer flush, which saved the scene
 	public float Fade; // black over the stream, 0 to 1: the loading screen the scene sets don't capture
+	public ScreenRect Indicator; // the game's loading indicator, kept from the final target over the black
 	public nint Target; // Kernel::Texture the UI pass renders into, read when the capture is queued
 	public fixed float Rects[FrameSlots.MaxRects * 4]; // left, top, right, bottom in pixels
 }
@@ -34,6 +37,7 @@ public sealed unsafe class FrameSlots: IDisposable
 		slot->PlateCount = 0;
 		slot->AfterUiBind = 0;
 		slot->Fade = 0;
+		slot->Indicator = ScreenRect.Empty;
 		return slot;
 	}
 

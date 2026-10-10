@@ -20,6 +20,7 @@ cbuffer Constants : register(b0)
 	uint HasLayer;
 	float CoverageRadius; // pixels the glyph coverage grows by, so the blur hides the text's shape too
 	float Fade; // black over everything, the loading screen the scene sets miss
+	float4 Keep; // left, top, right, bottom: shown as captured over the black, the game's loading indicator
 };
 
 // Highest layer alpha in a 5x5 grid spanning CoverageRadius, soft at the grown edge
@@ -95,6 +96,12 @@ void CS(uint2 id : SV_DispatchThreadID)
 	if (any(id >= Size))
 		return;
 	float2 p = id + 0.5f;
+	if (all(p >= Keep.xy) && all(p < Keep.zw))
+	{
+		Output[id] = float4(Capture[id].rgb, 1);
+		return;
+	}
+
 	float mask = WholeFrame;
 	float coverage = -1; // per pixel, only inside a nameplate rectangle
 	// ponytail: every pixel tests every rectangle; tile binning if this shows up in GPU time

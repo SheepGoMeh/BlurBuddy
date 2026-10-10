@@ -3,10 +3,13 @@ using System.Runtime.InteropServices;
 
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 
+using BlurBuddy.Tracking;
+
 using Sheep.OBSHookLibrary.Devices;
 
 using Vortice.Direct3D11;
 using Vortice.DXGI;
+using Vortice.Mathematics;
 
 namespace BlurBuddy.Capture;
 
@@ -92,8 +95,17 @@ public sealed unsafe class FrameRenderer: IDisposable
 			{
 				this.EnsureTextures(this.gameTexture);
 				// Every capture of the frame keeps the saved scene, the final target has the 2D UI by now
-				if (((FrameSlot*)slot)->AfterUiBind == 0 || this.savedFrame != this.layer.Frame)
+				FrameSlot* frame = (FrameSlot*)slot;
+				if (frame->AfterUiBind == 0 || this.savedFrame != this.layer.Frame)
 					this.gameContext.CopyResource(this.capture, this.gameTexture);
+				else if (!frame->Indicator.IsEmpty)
+				{
+					// The saved scene has no UI: the loading indicator from the final target
+					ScreenRect r = frame->Indicator;
+					this.gameContext.CopySubresourceRegion(this.capture, 0, (uint)r.Left, (uint)r.Top, 0, this.gameTexture, 0,
+						new Box((int)r.Left, (int)r.Top, 0, (int)r.Right, (int)r.Bottom, 1));
+				}
+
 				if (this.Composite != null)
 				{
 					this.Composite(this.gameContext, this.captureSrv!, this.layerView.NativePointer == 0 ? null : this.layerView, this.outputUav!,
