@@ -41,7 +41,7 @@ public class BlurBuddyPlugin: IDalamudPlugin
 			this.configuration.Version = 1;
 		}
 		this.nameplateLayer = new NameplateLayer();
-		this.frameRenderer = new FrameRenderer(this.configuration, this.nameplateLayer);
+		this.frameRenderer = new FrameRenderer(this.nameplateLayer);
 		this.blur = new Blur(this.configuration);
 		this.frameRenderer.Composite = this.blur.Run;
 		this.uiCapture = new UiCapture(this.configuration, this.nameplateLayer);

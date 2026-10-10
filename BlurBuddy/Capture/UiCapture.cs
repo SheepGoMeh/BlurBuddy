@@ -105,7 +105,7 @@ public sealed unsafe class UiCapture: IDisposable
 		    IsUiBind((RenderCommandSetTarget*)command))
 		{
 			this.uiBindSeen = true;
-			nint targets = this.layer.FlushArgument(this.final, ((RenderCommandSetTarget*)command)->RenderTargets[0].Value);
+			nint targets = this.layer.FlushArgument(this.final, ((RenderCommandSetTarget*)command)->RenderTargets[0].Value, this.set);
 			RenderCallback.Queue(&NameplateLayer.OnUiBegin, targets);
 		}
 
@@ -138,6 +138,7 @@ public sealed unsafe class UiCapture: IDisposable
 			this.Tracker.Collect(slot, this.set); // UI hidden: the frame is the scene for every set
 		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
+		slot->Set = this.set;
 		slot->Fade = this.set == CaptureSet.Ui ? 0 : this.loadingFade.Current(); // the UI set has the real one
 		// Only over full black: anywhere else the final target there can hold UI the scene sets hide
 		Device* device = Device.Instance();

@@ -42,9 +42,11 @@ public sealed unsafe class NameplateLayer: IDisposable
 	// Main thread at the UI pass: the final target (as the gate picks it, see UiCapture.FinalTarget) and the layer of its size
 	private volatile nint finalTarget;
 	private volatile nint uiTarget; // what the 2D UI's bind renders into: the final target, or another plugin's UI layer
-	// Per frame final and UI targets for the flush, a ring like FrameSlots: only compared through uiTarget, drawn into from here
+	// Per frame final and UI targets and the set for the flush, a ring like FrameSlots: only compared through uiTarget, drawn
+	// into from here; the set is the frame's, the render thread runs frames behind a change
 	private const int FlushSlots = 4;
-	private readonly nint* flushTargets = (nint*)NativeMemory.AllocZeroed(FlushSlots * 2, (nuint)sizeof(nint));
+	private const int FlushArguments = 3;
+	private readonly nint* flushTargets = (nint*)NativeMemory.AllocZeroed(FlushSlots * FlushArguments, (nuint)sizeof(nint));
 	private int nextFlush;
 	private volatile nint layer;
 	private volatile bool stopped;
@@ -74,8 +76,8 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.setBlendStateHook.Enable();
 	}
 
-	/// <summary>Render thread: the scene is in the final target, before the plates are drawn back</summary>
-	public Action<nint>? SceneReady { get; set; }
+	/// <summary>Render thread: the scene is in the final target, before the plates are drawn back; with the frame's set</summary>
+	public Action<nint, CaptureSet>? SceneReady { get; set; }
 
 	/// <summary>Render thread: the layer with this frame's plates, 0 when none were drawn; valid until the next frame's plates</summary>
 	public nint Drawn => this.drawn;
@@ -115,12 +117,13 @@ public sealed unsafe class NameplateLayer: IDisposable
 	/// Main thread, at the 2D UI's bind (its target is RTM+0x570 during AtkServer.Draw): the argument of the
 	/// <see cref="OnUiBegin"/> callback queued in front of it
 	/// </summary>
-	public nint FlushArgument(KernelTexture* final, KernelTexture* ui)
+	public nint FlushArgument(KernelTexture* final, KernelTexture* ui, CaptureSet set)
 	{
-		nint* targets = this.flushTargets + (this.nextFlush * 2);
+		nint* targets = this.flushTargets + (this.nextFlush * FlushArguments);
 		this.nextFlush = (this.nextFlush + 1) % FlushSlots;
 		targets[0] = (nint)final;
 		targets[1] = (nint)ui;
+		targets[2] = (nint)set;
 		this.uiTarget = (nint)ui;
 		return (nint)targets;
 	}
@@ -130,7 +133,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 	{
 		try
 		{
-			instance?.Flush(((nint*)targets)[0], ((nint*)targets)[1]);
+			instance?.Flush(((nint*)targets)[0], ((nint*)targets)[1], (CaptureSet)((nint*)targets)[2]);
 		}
 		catch (Exception e)
 		{
@@ -139,13 +142,13 @@ public sealed unsafe class NameplateLayer: IDisposable
 	}
 
 	/// <summary>Render thread, before the 2D UI: scene saved, plates drawn back over it</summary>
-	public void Flush(nint final, nint ui)
+	public void Flush(nint final, nint ui, CaptureSet set)
 	{
 		if (this.stopped || final == 0)
 			return;
 
 		this.Frame++;
-		this.SceneReady?.Invoke(final);
+		this.SceneReady?.Invoke(final, set);
 		if (this.pending)
 		{
 			// Every capture this frame reads it, the next frame's plate bind clears it
@@ -171,10 +174,10 @@ public sealed unsafe class NameplateLayer: IDisposable
 	public uint Frame { get; private set; }
 
 	/// <summary>Render thread: plates drawn but no 2D UI bind came after them</summary>
-	public void FlushPending(nint final)
+	public void FlushPending(nint final, CaptureSet set)
 	{
 		if (this.pending)
-			this.Flush(final, final); // no UI pass, no UI target
+			this.Flush(final, final, set); // no UI pass, no UI target
 	}
 
 	/// <summary>Render thread: the plate bind draws into the layer, the depth stays bound so the occlusion is unchanged</summary>
