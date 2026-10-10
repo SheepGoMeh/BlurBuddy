@@ -17,6 +17,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 	private const float Feather = 6.0f;
 	private const int MaxRadius = 32;
 	private const float PixelsPerStrength = 4.0f; // pixelate block size
+	private const float CoverageRadius = 8.0f; // nameplate glyph coverage grows by this, so the blur hides the words' shapes
 
 	[StructLayout(LayoutKind.Sequential)]
 	private struct DownsampleConstants
@@ -45,13 +46,17 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		public uint Style;
 		public float BlockSize;
 		public float Strength;
+		public uint PlateCount;
+		public uint HasLayer;
+		public float CoverageRadius;
+		public float Padding0;
 	}
 
 	private Pipeline? pipeline;
 	private Targets? targets;
 
-	public void Run(ID3D11DeviceContext context, ID3D11ShaderResourceView capture, ID3D11UnorderedAccessView output, uint width, uint height,
-		nint slotPointer)
+	public void Run(ID3D11DeviceContext context, ID3D11ShaderResourceView capture, ID3D11ShaderResourceView? layer,
+		ID3D11UnorderedAccessView output, uint width, uint height, nint slotPointer)
 	{
 		FrameSlot* slot = (FrameSlot*)slotPointer;
 		uint halfWidth = (width + 1) / 2, halfHeight = (height + 1) / 2;
@@ -91,10 +96,12 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		{
 			Width = width, Height = height, RectCount = count, WholeFrame = (uint)slot->WholeFrame, Feather = Feather,
 			Style = (uint)style, BlockSize = MathF.Max(2.0f, strength * PixelsPerStrength), Strength = strength,
+			PlateCount = (uint)Math.Min(slot->PlateCount, (int)count), HasLayer = layer != null ? 1u : 0u, CoverageRadius = CoverageRadius,
 		});
+		context.CSSetShaderResource(3, layer); // Pass binds and unbinds 0-2
 		Pass(context, p.Composite, p.CompositeCb, capture, t.HalfSrv, p.RectsSrv, output, width, height);
 
-		context.CSUnsetShaderResources(0, 3);
+		context.CSUnsetShaderResources(0, 4);
 		context.CSSetShader(null);
 	}
 
