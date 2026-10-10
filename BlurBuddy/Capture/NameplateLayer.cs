@@ -104,10 +104,6 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.finalTarget = (nint)final;
 	}
 
-	/// <summary>Main thread: whether this bind is the 2D UI's, the UI pass's bind of the final target without depth</summary>
-	public bool IsUiBind(RenderCommandSetTarget* command) =>
-		this.finalTarget != 0 && command->RenderTargets[0].Value == (KernelTexture*)this.finalTarget && command->DepthBuffer == null;
-
 	[UnmanagedCallersOnly]
 	public static void OnUiBegin(nint final)
 	{

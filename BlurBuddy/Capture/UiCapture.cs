@@ -17,6 +17,8 @@ namespace BlurBuddy.Capture;
 /// </summary>
 public sealed unsafe class UiCapture: IDisposable
 {
+	private const int AlternateFinalOffset = 0x4E8; // RenderTargetManager, Kernel::Texture*: ToneAdjustSource / upscaler output
+
 	private delegate void ProcessUiCommandsDelegate(AtkServer* server, bool a2);
 
 	private delegate void Draw2DDelegate(UIModule* module);
@@ -44,6 +46,7 @@ public sealed unsafe class UiCapture: IDisposable
 	// AtkServer.Draw's context: its bind of the final target without depth is the 2D UI's
 	private Context* drawing;
 	private bool uiBindSeen;
+	private Texture* final; // this frame's, see FinalTarget
 
 	public UiCapture(BlurBuddyConfiguration configuration, NameplateLayer layer)
 	{
@@ -76,11 +79,27 @@ public sealed unsafe class UiCapture: IDisposable
 	/// <summary>Framework thread</summary>
 	public void Update() => this.set = this.configuration.Set;
 
+	/// <summary>
+	/// The frame's final target as the gate at the end of Manager.Render picks it (ffxiv_rev scene-ui-gate): RTM+0x4E8 when
+	/// set, else the back buffer. Not RTM+0x570 inside AtkServer.Draw, which other plugins (UpscaleBuddy) point at their own
+	/// UI layer for the call
+	/// </summary>
+	private static Texture* FinalTarget()
+	{
+		RenderTargetManager* targets = RenderTargetManager.Instance();
+		Texture* alternate = targets == null ? null : *(Texture**)((byte*)targets + AlternateFinalOffset);
+		if (alternate != null)
+			return alternate;
+
+		SwapChain* swapChain = Device.Instance()->SwapChain;
+		return swapChain == null ? null : swapChain->BackBuffer;
+	}
+
 	/// <summary>Main thread: the layer for this frame's final target; the 2D UI's bind is found while the UI is built</summary>
 	private void DrawDetour(AtkServer* server, bool flag)
 	{
-		RenderTargetManager* targets = RenderTargetManager.Instance();
-		this.layer.Prepare(targets == null ? null : targets->SwapChainBackBuffer);
+		this.final = FinalTarget();
+		this.layer.Prepare(this.final);
 		this.drawing = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		this.uiBindSeen = false;
 		this.draw.Original(server, flag);
@@ -91,12 +110,13 @@ public sealed unsafe class UiCapture: IDisposable
 
 	private void PushBackDetour(Context* context, void* command)
 	{
-		// In front of it with the same key: after the nameplates' draws, right before the 2D UI's
+		// In front of it with the same key: after the nameplates' draws, right before the 2D UI's. AtkServer.Draw binds
+		// RTM+0x570 as it is during the call, another plugin's UI layer included; the scene is still saved from the final target
 		if (context == this.drawing && !this.uiBindSeen && ((RenderCommand*)command)->Type == RenderCommandType.SetTarget &&
-		    this.layer.IsUiBind((RenderCommandSetTarget*)command))
+		    IsUiBind((RenderCommandSetTarget*)command))
 		{
 			this.uiBindSeen = true;
-			RenderCallback.Queue(&NameplateLayer.OnUiBegin, (nint)((RenderCommandSetTarget*)command)->RenderTargets[0].Value);
+			RenderCallback.Queue(&NameplateLayer.OnUiBegin, (nint)this.final);
 		}
 
 		if (context == this.tracking)
@@ -126,10 +146,17 @@ public sealed unsafe class UiCapture: IDisposable
 		this.QueueCapture(key);
 	}
 
+	private static bool IsUiBind(RenderCommandSetTarget* command)
+	{
+		RenderTargetManager* targets = RenderTargetManager.Instance();
+		return targets != null && command->RenderTargets[0].Value == targets->SwapChainBackBuffer && command->DepthBuffer == null;
+	}
+
 	private void Draw2DDetour(UIModule* module)
 	{
 		this.queuedThisFrame = false;
 		this.uiBindSeen = false;
+		this.final = FinalTarget();
 		this.draw2D.Original(module);
 		if (!this.queuedThisFrame)
 			this.QueueCapture(track: false); // UI hidden: the frame is the scene for every set
@@ -140,8 +167,7 @@ public sealed unsafe class UiCapture: IDisposable
 		FrameSlot* slot = this.slots.Next();
 		if (track)
 			this.Tracker.Collect(slot, this.set);
-		RenderTargetManager* targets = RenderTargetManager.Instance();
-		slot->Target = targets == null ? 0 : (nint)targets->SwapChainBackBuffer;
+		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
 		this.Status = RenderCallback.Queue(&FrameRenderer.OnRender, (nint)slot, sortKey) ? "Capturing" : "Failed to queue the capture";
 	}
