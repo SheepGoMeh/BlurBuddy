@@ -20,7 +20,9 @@ namespace BlurBuddy.Capture;
 /// (view 30, keys 0xCE/0xCF..., ffxiv_rev nameplate-layer-handoff). That bind gets our layer as render target 0 with the depth
 /// kept, so the plates land in it occluded exactly as on screen; their blends are rewritten to leave it premultiplied.
 /// Right before the 2D UI's bind (a callback queued in front of it) the scene is saved and the layer drawn back over the
-/// final target, so the player's screen is unchanged.
+/// 2D UI's target, so the plates go wherever the UI goes and the player's screen is unchanged.
+/// With UpscaleBuddy (frame generation) the UI's target is its UI layer: whichever plugin's hook runs first, the plate bind
+/// shows the final target or that layer, and the plates stay off the scene it interpolates.
 /// </summary>
 public sealed unsafe class NameplateLayer: IDisposable
 {
@@ -37,8 +39,13 @@ public sealed unsafe class NameplateLayer: IDisposable
 	private readonly Hook<SetTargetDelegate> setTargetHook;
 	private readonly Hook<SetBlendStateDelegate> setBlendStateHook;
 
-	// Main thread at the UI pass: the final target (RTM+0x570 as AtkServer.Draw sees it) and the layer of its size
+	// Main thread at the UI pass: the final target (as the gate picks it, see UiCapture.FinalTarget) and the layer of its size
 	private volatile nint finalTarget;
+	private volatile nint uiTarget; // what the 2D UI's bind renders into: the final target, or another plugin's UI layer
+	// Per frame final and UI targets for the flush, a ring like FrameSlots: only compared through uiTarget, drawn into from here
+	private const int FlushSlots = 4;
+	private readonly nint* flushTargets = (nint*)NativeMemory.AllocZeroed(FlushSlots * 2, (nuint)sizeof(nint));
+	private int nextFlush;
 	private volatile nint layer;
 	private volatile bool stopped;
 	private (uint, uint) failedSize;
@@ -67,8 +74,8 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.setBlendStateHook.Enable();
 	}
 
-	/// <summary>Render thread: the scene is in the final target, before (false) and after (true) the plates are drawn back</summary>
-	public Action<nint, bool>? SceneReady { get; set; }
+	/// <summary>Render thread: the scene is in the final target, before the plates are drawn back</summary>
+	public Action<nint>? SceneReady { get; set; }
 
 	/// <summary>Render thread: the layer with this frame's plates, 0 when none were drawn; valid until the next frame's plates</summary>
 	public nint Drawn => this.drawn;
@@ -104,12 +111,26 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.finalTarget = (nint)final;
 	}
 
+	/// <summary>
+	/// Main thread, at the 2D UI's bind (its target is RTM+0x570 during AtkServer.Draw): the argument of the
+	/// <see cref="OnUiBegin"/> callback queued in front of it
+	/// </summary>
+	public nint FlushArgument(KernelTexture* final, KernelTexture* ui)
+	{
+		nint* targets = this.flushTargets + (this.nextFlush * 2);
+		this.nextFlush = (this.nextFlush + 1) % FlushSlots;
+		targets[0] = (nint)final;
+		targets[1] = (nint)ui;
+		this.uiTarget = (nint)ui;
+		return (nint)targets;
+	}
+
 	[UnmanagedCallersOnly]
-	public static void OnUiBegin(nint final)
+	public static void OnUiBegin(nint targets)
 	{
 		try
 		{
-			instance?.Flush(final);
+			instance?.Flush(((nint*)targets)[0], ((nint*)targets)[1]);
 		}
 		catch (Exception e)
 		{
@@ -118,26 +139,32 @@ public sealed unsafe class NameplateLayer: IDisposable
 	}
 
 	/// <summary>Render thread, before the 2D UI: scene saved, plates drawn back over it</summary>
-	public void Flush(nint final)
+	public void Flush(nint final, nint ui)
 	{
 		if (this.stopped || final == 0)
 			return;
 
 		this.Frame++;
-		this.SceneReady?.Invoke(final, false);
+		this.SceneReady?.Invoke(final);
 		if (this.pending)
 		{
 			// Every capture this frame reads it, the next frame's plate bind clears it
 			this.pending = false;
 			this.cleared = 0;
-			this.Draw((KernelTexture*)final, (KernelTexture*)this.drawn);
+			KernelTexture* target = (KernelTexture*)(ui != 0 ? ui : final);
+			this.Draw(RenderTargetView(target), target->ActualWidth, target->ActualHeight, (KernelTexture*)this.drawn);
 		}
 		else
 		{
 			this.drawn = 0; // no plates this frame
 		}
+	}
 
-		this.SceneReady?.Invoke(final, true);
+	/// <summary>Render thread, from <see cref="SceneReady"/>: this frame's plates over another render target of their size</summary>
+	public void DrawOver(nint renderTargetView, uint width, uint height)
+	{
+		if (this.pending)
+			this.Draw(renderTargetView, width, height, (KernelTexture*)this.drawn);
 	}
 
 	/// <summary>Render thread: counts UI passes, captures with the same value ran in one frame</summary>
@@ -147,16 +174,19 @@ public sealed unsafe class NameplateLayer: IDisposable
 	public void FlushPending(nint final)
 	{
 		if (this.pending)
-			this.Flush(final);
+			this.Flush(final, final); // no UI pass, no UI target
 	}
 
 	/// <summary>Render thread: the plate bind draws into the layer, the depth stays bound so the occlusion is unchanged</summary>
 	private void SetTargetDetour(ImmediateContext* context, RenderCommandSetTarget* command)
 	{
 		nint final = this.finalTarget;
+		nint ui = this.uiTarget;
 		nint layer = this.layer;
 		KernelTexture** target = (KernelTexture**)command->RenderTargets.GetPointer(0);
-		if (this.stopped || final == 0 || layer == 0 || (nint)target[0] != final || command->DepthBuffer == null)
+		KernelTexture* bound = target[0];
+		bool plates = final != 0 && ((nint)bound == final || (ui != 0 && (nint)bound == ui)) && command->DepthBuffer != null;
+		if (this.stopped || layer == 0 || !plates)
 		{
 			this.setTargetHook.Original(context, command);
 			return;
@@ -172,7 +202,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.pending = true;
 		target[0] = (KernelTexture*)layer;
 		this.setTargetHook.Original(context, command);
-		target[0] = (KernelTexture*)final;
+		target[0] = bound;
 	}
 
 	/// <summary>Render thread, every draw state change: blends into the layer accumulate coverage</summary>
@@ -228,13 +258,15 @@ public sealed unsafe class NameplateLayer: IDisposable
 	}
 
 	/// <summary>Layer over the target, premultiplied; in a context state of its own so the game's bindings and state cache stay</summary>
-	private void Draw(KernelTexture* target, KernelTexture* layer)
+	private static nint RenderTargetView(KernelTexture* texture) => (nint)texture->GetMipRenderTarget(0, 0)->D3D11RenderTargetViewOrDepthStencilView;
+
+	private void Draw(nint renderTargetView, uint width, uint height, KernelTexture* layer)
 	{
-		if (layer == null || target->ActualWidth != layer->ActualWidth || target->ActualHeight != layer->ActualHeight)
+		if (layer == null || renderTargetView == 0 || width != layer->ActualWidth || height != layer->ActualHeight)
 			return;
 
 		this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
-		this.targetView.NativePointer = (nint)target->GetMipRenderTarget(0, 0)->D3D11RenderTargetViewOrDepthStencilView;
+		this.targetView.NativePointer = renderTargetView;
 		this.layerView.NativePointer = (nint)layer->D3D11ShaderResourceView;
 		try
 		{
@@ -245,7 +277,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 			ID3DDeviceContextState previous = context.SwapDeviceContextState(this.state!);
 			context.OMSetRenderTargets(this.targetView, null);
 			context.OMSetBlendState(this.blendState);
-			context.RSSetViewport(0, 0, target->ActualWidth, target->ActualHeight, 0, 1);
+			context.RSSetViewport(0, 0, width, height, 0, 1);
 			context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
 			context.VSSetShader(this.vertexShader);
 			context.PSSetShader(this.pixelShader);
@@ -312,6 +344,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.vertexShader?.Dispose();
 		this.state?.Dispose();
 		this.context1?.Dispose();
+		NativeMemory.Free(this.flushTargets);
 		instance = null;
 	}
 }
