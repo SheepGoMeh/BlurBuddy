@@ -13,13 +13,17 @@ using BlurBuddy.Tracking;
 namespace BlurBuddy.Capture;
 
 /// <summary>
-/// Queues the capture callback after AtkServer's UI replay, and the nameplate layer's flush in front of the 2D UI's bind
+/// Queues the capture callback after ToneAdjust, once a frame, and the nameplate layer's flush in front of the 2D UI's bind
 /// </summary>
 public sealed unsafe class UiCapture: IDisposable
 {
 	private const int AlternateFinalOffset = 0x4E8; // RenderTargetManager, Kernel::Texture*: ToneAdjustSource / upscaler output
 
-	private delegate void ProcessUiCommandsDelegate(AtkServer* server, bool a2);
+	// ToneAdjust turns the final target into the back buffer in view 31 at 0xFFFFFFFF, after all UI (PostEffectManager.Submit,
+	// queued before the UI); with Context+0x2F70 clear the top nibble of view 31 keys is forced to 0xF (UpscaleBuddy UiLayer)
+	private const int ToneAdjustView = 31;
+	private const uint AfterToneAdjust = 0x0FFFFFFF; // ToneAdjust's own key, queued after it so sorted after it
+	private const int ContextSubViewFlagOffset = 0x2F70;
 
 	private delegate void Draw2DDelegate(UIModule* module);
 
@@ -29,19 +33,10 @@ public sealed unsafe class UiCapture: IDisposable
 	private readonly NameplateLayer layer;
 	private readonly FrameSlots slots = new();
 	private readonly Hook<AtkServer.Delegates.Draw> draw;
-	private readonly Hook<ProcessUiCommandsDelegate> process16;
-	private readonly Hook<ProcessUiCommandsDelegate> process32;
 	private readonly Hook<Draw2DDelegate> draw2D;
 	private readonly Hook<PushBackDelegate> pushBack;
 	private volatile CaptureSet set;
-	private bool queuedThisFrame;
-
-	// Sort keys of the commands a replay queues, the capture is queued after the highest
-	private Context* tracking; // the replaying thread's context, null when not tracking
-	private bool anyBefore;
-	private uint maxBefore;
-	private uint replayMin = uint.MaxValue;
-	private uint previousMin = uint.MaxValue;
+	private bool uiDrawn; // AtkServer.Draw ran this frame
 
 	// AtkServer.Draw's context: its bind of the final target without depth is the 2D UI's
 	private Context* drawing;
@@ -56,18 +51,12 @@ public sealed unsafe class UiCapture: IDisposable
 		this.Tracker = new ElementTracker(configuration);
 		this.draw = Service.GameInteropProvider.HookFromAddress<AtkServer.Delegates.Draw>(
 			(nint)AtkServer.MemberFunctionPointers.Draw, this.DrawDetour);
-		this.process16 = Service.GameInteropProvider.HookFromAddress<ProcessUiCommandsDelegate>(
-			(nint)AtkServer.MemberFunctionPointers.ProcessUICommands, (s, a) => this.Detour(this.process16!, s, a));
-		this.process32 = Service.GameInteropProvider.HookFromAddress<ProcessUiCommandsDelegate>(
-			(nint)AtkServer.MemberFunctionPointers.ProcessUICommandsAlt, (s, a) => this.Detour(this.process32!, s, a));
 		this.draw2D = Service.GameInteropProvider.HookFromAddress<Draw2DDelegate>(
 			(nint)UIModule.MemberFunctionPointers.Draw2D, this.Draw2DDetour);
 		this.pushBack = Service.GameInteropProvider.HookFromAddress<PushBackDelegate>(
 			(nint)Context.MemberFunctionPointers.PushBackCommand, this.PushBackDetour);
 
 		this.draw.Enable();
-		this.process16.Enable();
-		this.process32.Enable();
 		this.draw2D.Enable();
 		this.pushBack.Enable();
 	}
@@ -102,10 +91,9 @@ public sealed unsafe class UiCapture: IDisposable
 		this.layer.Prepare(this.final);
 		this.drawing = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		this.uiBindSeen = false;
+		this.uiDrawn = true;
 		this.draw.Original(server, flag);
 		this.drawing = null;
-		if (!this.uiBindSeen)
-			this.Status = "2D UI bind not found, the stream can show the UI and nameplates";
 	}
 
 	private void PushBackDetour(Context* context, void* command)
@@ -119,31 +107,7 @@ public sealed unsafe class UiCapture: IDisposable
 			RenderCallback.Queue(&NameplateLayer.OnUiBegin, (nint)this.final);
 		}
 
-		if (context == this.tracking)
-		{
-			uint key = context->SortKey;
-			this.replayMin = Math.Min(this.replayMin, key);
-			this.maxBefore = Math.Max(this.maxBefore, key);
-			this.anyBefore = true;
-		}
-
 		this.pushBack.Original(context, command);
-	}
-
-	/// <summary>Commands run by sort key, equal keys in queue order: the capture goes after the replay's last command</summary>
-	private void Detour(Hook<ProcessUiCommandsDelegate> hook, AtkServer* server, bool a2)
-	{
-		this.queuedThisFrame = true;
-		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
-		this.anyBefore = false;
-		this.maxBefore = 0;
-		this.replayMin = uint.MaxValue;
-		this.tracking = context;
-		hook.Original(server, a2);
-		this.tracking = null;
-		uint key = UiSplit.CaptureKey(this.anyBefore, this.maxBefore, this.previousMin, context->SortKey);
-		this.previousMin = this.replayMin;
-		this.QueueCapture(key);
 	}
 
 	private static bool IsUiBind(RenderCommandSetTarget* command)
@@ -154,29 +118,37 @@ public sealed unsafe class UiCapture: IDisposable
 
 	private void Draw2DDetour(UIModule* module)
 	{
-		this.queuedThisFrame = false;
+		this.uiDrawn = false;
 		this.uiBindSeen = false;
 		this.final = FinalTarget();
 		this.draw2D.Original(module);
-		if (!this.queuedThisFrame)
-			this.QueueCapture(track: false); // UI hidden: the frame is the scene for every set
+		this.QueueCapture();
 	}
 
-	private void QueueCapture(uint? sortKey = null, bool track = true)
+	/// <summary>
+	/// After ToneAdjust: every UI is on the final target by then, also when another plugin (UpscaleBuddy) drew it into a
+	/// layer of its own and puts it back right before ToneAdjust. ToneAdjust only reads the final target
+	/// </summary>
+	private void QueueCapture()
 	{
 		FrameSlot* slot = this.slots.Next();
-		if (track)
-			this.Tracker.Collect(slot, this.set);
+		if (this.uiDrawn)
+			this.Tracker.Collect(slot, this.set); // UI hidden: the frame is the scene for every set
 		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
-		this.Status = RenderCallback.Queue(&FrameRenderer.OnRender, (nint)slot, sortKey) ? "Capturing" : "Failed to queue the capture";
+		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
+		uint key = context->SortKey;
+		uint top = (*((byte*)context + ContextSubViewFlagOffset) == 0 ? key | 0xF0000000 : key) & 0xF0000000;
+		this.Status = !RenderCallback.Queue(&FrameRenderer.OnRender, (nint)slot, top | AfterToneAdjust, ToneAdjustView)
+			? "Failed to queue the capture"
+			: this.uiDrawn && !this.uiBindSeen
+				? "2D UI bind not found, the stream can show the UI and nameplates"
+				: "Capturing";
 	}
 
 	public void Stop()
 	{
 		this.draw.Disable();
-		this.process16.Disable();
-		this.process32.Disable();
 		this.draw2D.Disable();
 		this.pushBack.Disable();
 	}
@@ -184,8 +156,6 @@ public sealed unsafe class UiCapture: IDisposable
 	public void Dispose()
 	{
 		this.draw.Dispose();
-		this.process16.Dispose();
-		this.process32.Dispose();
 		this.draw2D.Dispose();
 		this.pushBack.Dispose();
 		this.slots.Dispose();

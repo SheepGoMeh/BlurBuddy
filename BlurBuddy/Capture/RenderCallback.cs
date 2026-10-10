@@ -24,8 +24,8 @@ public static unsafe class RenderCallback
 		[FieldOffset(0x18)] public byte Flags;
 	}
 
-	/// <summary>Main thread; commands run by sort key, the context's current one unless given</summary>
-	public static bool Queue(delegate* unmanaged<nint, void> function, nint argument, uint? sortKey = null)
+	/// <summary>Main thread; commands run by view, then sort key; the context's current ones unless given</summary>
+	public static bool Queue(delegate* unmanaged<nint, void> function, nint argument, uint? sortKey = null, int? view = null)
 	{
 		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		if (context == null)
@@ -41,10 +41,14 @@ public static unsafe class RenderCallback
 		command->Flags = Flags;
 
 		uint contextKey = context->SortKey;
+		int contextView = context->ViewIndex;
 		if (sortKey != null)
 			context->SortKey = sortKey.Value;
+		if (view != null)
+			context->ViewIndex = view.Value;
 		context->PushBackCommand(command);
 		context->SortKey = contextKey;
+		context->ViewIndex = contextView;
 		return true;
 	}
 }
