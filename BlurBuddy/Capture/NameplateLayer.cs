@@ -218,10 +218,6 @@ public sealed unsafe class NameplateLayer: IDisposable
 		target[0] = (KernelTexture*)layer;
 		this.setTargetHook.Original(context, command);
 		target[0] = bound;
-
-		// Draws skip SetBlendState while their key matches the cached one (CurrentBlendState): the plates' first key can be
-		// the one last set for another target, which would keep the game's alpha factors in the layer
-		*(uint*)&context->CurrentBlendState = ~*(uint*)&context->CurrentBlendState;
 	}
 
 	/// <summary>Render thread, every draw state change: blends into the layer keep its transmittance</summary>
