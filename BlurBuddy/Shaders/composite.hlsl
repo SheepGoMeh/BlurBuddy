@@ -23,7 +23,15 @@ cbuffer Constants : register(b0)
 	float4 Keep; // left, top, right, bottom: shown as captured over the black, the game's loading indicator
 };
 
-// Highest layer alpha in a 5x5 grid spanning CoverageRadius, soft at the grown edge
+// Whether a plate drew here at all: translucent plates (the game fades them while moving) are still readable, and additive
+// glows add colour without alpha; any of it is hidden in full
+float Drawn(int2 q)
+{
+	float4 plate = Layer[q];
+	return max(plate.a, max(plate.r, max(plate.g, plate.b))) > 2.0f / 255 ? 1 : 0;
+}
+
+// Plate pixels in a 5x5 grid spanning CoverageRadius, soft at the grown edge
 float Coverage(float2 p)
 {
 	float coverage = 0;
@@ -33,10 +41,10 @@ float Coverage(float2 p)
 		{
 			int2 q = clamp(int2(p + float2(x, y) * (CoverageRadius / 2)), 0, int2(Size) - 1);
 			float falloff = 1 - 0.25f * max(abs(x), abs(y)) / 2;
-			coverage = max(coverage, Layer[q].a * falloff);
+			coverage = max(coverage, Drawn(q) * falloff);
 		}
 	}
-	return saturate(coverage * 4);
+	return coverage;
 }
 
 float3 Pixelate(float2 p)
