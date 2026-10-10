@@ -5,6 +5,7 @@ using System.Numerics;
 using BlurBuddy.Capture;
 
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -43,6 +44,7 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 	}
 
 	private readonly PlateOwner[] plateOwners = new PlateOwner[NamePlateCount];
+	private readonly bool[] plateTargeted = new bool[NamePlateCount];
 
 	public string Status { get; private set; } = "";
 
@@ -63,7 +65,6 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 			float width = device->Width, height = device->Height;
 			if (configuration.BlurNameplates)
 				this.CollectNameplates(slot, width, height);
-			slot->PlateCount = slot->RectCount;
 			if (set == CaptureSet.Ui)
 				this.CollectModules(slot, width, height);
 			this.Status = slot->WholeFrame != 0 ? "Too many elements, blurring the whole frame" : "";
@@ -93,21 +94,35 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 			return;
 
 		this.MarkPlayerPlates();
+		// Plates drawn in the depth tested nameplate pass first: the composite blurs them only where the layer has them
 		for (int i = 0; i < NamePlateCount; i++)
 		{
-			AddonNamePlate.NamePlateObject* plate = addon->NamePlateObjectArray + i;
-			PlateOwner owner = this.plateOwners[i];
-			if (owner == PlateOwner.None || !IsShown((AtkResNode*)plate->RootComponentNode))
-				continue;
-
-			// The collision node is the game's click area, sized to the baked text; markers (target arrow) identify no one
-			ScreenRect text = NodeRect((AtkResNode*)plate->NameplateCollision);
-			// Unmeasurable text: the whole plate
-			ScreenRect? lineRect = configuration.OnlyPlayerNames ? IdentifyingRect(plate, owner, text) : null;
-			ScreenRect rect = lineRect ??
-			                  text.Union(NodeRect((AtkResNode*)plate->NameIcon)).Union(NodeRect((AtkResNode*)plate->GaugeContainer));
-			this.Add(slot, rect.Inflate(configuration.NameplatePadding).Clamp(width, height), lineRect != null ? "name line" : "plate");
+			if (!this.plateTargeted[i])
+				this.AddPlate(slot, addon->NamePlateObjectArray + i, this.plateOwners[i], width, height);
 		}
+
+		slot->PlateCount = slot->RectCount;
+
+		// The (soft) target's plate shows through walls, it isn't in the layer: its whole rectangle
+		for (int i = 0; i < NamePlateCount; i++)
+		{
+			if (this.plateTargeted[i])
+				this.AddPlate(slot, addon->NamePlateObjectArray + i, this.plateOwners[i], width, height);
+		}
+	}
+
+	private void AddPlate(FrameSlot* slot, AddonNamePlate.NamePlateObject* plate, PlateOwner owner, float width, float height)
+	{
+		if (owner == PlateOwner.None || !IsShown((AtkResNode*)plate->RootComponentNode))
+			return;
+
+		// The collision node is the game's click area, sized to the baked text; markers (target arrow) identify no one
+		ScreenRect text = NodeRect((AtkResNode*)plate->NameplateCollision);
+		// Unmeasurable text: the whole plate
+		ScreenRect? lineRect = configuration.OnlyPlayerNames ? IdentifyingRect(plate, owner, text) : null;
+		ScreenRect rect = lineRect ??
+		                  text.Union(NodeRect((AtkResNode*)plate->NameIcon)).Union(NodeRect((AtkResNode*)plate->GaugeContainer));
+		this.Add(slot, rect.Inflate(configuration.NameplatePadding).Clamp(width, height), lineRect != null ? "name line" : "plate");
 	}
 
 	/// <summary>
@@ -166,10 +181,12 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 	private void MarkPlayerPlates()
 	{
 		Array.Clear(this.plateOwners);
+		Array.Clear(this.plateTargeted);
 		UI3DModule* module = UIModule.Instance()->GetUI3DModule();
 		if (module == null)
 			return;
 
+		TargetSystem* targets = TargetSystem.Instance();
 		for (int i = 0; i < module->NamePlateObjectInfoCount; i++)
 		{
 			UI3DModule.ObjectInfo* info = module->NamePlateObjectInfoPointers[i].Value;
@@ -177,6 +194,8 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 				continue;
 
 			this.plateOwners[info->NamePlateIndex] = OwnerOf(info);
+			this.plateTargeted[info->NamePlateIndex] = targets != null &&
+			                                            (info->GameObject == targets->Target || info->GameObject == targets->SoftTarget);
 		}
 	}
 
