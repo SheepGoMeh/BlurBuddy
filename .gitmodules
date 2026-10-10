@@ -1,4 +1,4 @@
 [submodule "OBSHookLibrary"]
 	path = OBSHookLibrary
-	url = https://github.com/SheepGoMeh/OBSHookLibrary.git
+	url = git@github.com:SheepGoMeh/OBSHookLibrary.git
 	branch = main
