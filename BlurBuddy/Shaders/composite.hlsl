@@ -3,7 +3,7 @@
 Texture2D<float4> Capture : register(t0);
 Texture2D<float4> Blurred : register(t1);
 StructuredBuffer<float4> Rects : register(t2); // left, top, right, bottom in pixels
-Texture2D<float4> Layer : register(t3); // premultiplied nameplates, depth tested against the scene
+Texture2D<float4> Layer : register(t3); // nameplates added (rgb) and the scene's transmittance (a), depth tested
 RWTexture2D<float4> Output : register(u0);
 SamplerState Linear : register(s0);
 
@@ -28,7 +28,7 @@ cbuffer Constants : register(b0)
 float Drawn(int2 q)
 {
 	float4 plate = Layer[q];
-	return max(plate.a, max(plate.r, max(plate.g, plate.b))) > 2.0f / 255 ? 1 : 0;
+	return max(1 - plate.a, max(plate.r, max(plate.g, plate.b))) > 2.0f / 255 ? 1 : 0;
 }
 
 // Plate pixels in a 5x5 grid spanning CoverageRadius, soft at the grown edge

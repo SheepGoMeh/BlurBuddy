@@ -18,7 +18,7 @@ namespace BlurBuddy.Capture;
 /// <summary>
 /// Nameplates are one bind of the final target with the display depth buffer, after the post effects and before the 2D UI
 /// (view 30, keys 0xCE/0xCF..., ffxiv_rev nameplate-layer-handoff). That bind gets our layer as render target 0 with the depth
-/// kept, so the plates land in it occluded exactly as on screen; their blends are rewritten to leave it premultiplied.
+/// kept, so the plates land in it occluded exactly as on screen; their blends are rewritten to keep the scene's transmittance in its alpha.
 /// Right before the 2D UI's bind (a callback queued in front of it) the scene is saved and the layer drawn back over the
 /// 2D UI's target, so the plates go wherever the UI goes and the player's screen is unchanged.
 /// With UpscaleBuddy (frame generation) the UI's target is its UI layer: whichever plugin's hook runs first, the plate bind
@@ -218,26 +218,32 @@ public sealed unsafe class NameplateLayer: IDisposable
 		target[0] = (KernelTexture*)layer;
 		this.setTargetHook.Original(context, command);
 		target[0] = bound;
+
+		// Draws skip SetBlendState while their key matches the cached one (CurrentBlendState): the plates' first key can be
+		// the one last set for another target, which would keep the game's alpha factors in the layer
+		*(uint*)&context->CurrentBlendState = ~*(uint*)&context->CurrentBlendState;
 	}
 
-	/// <summary>Render thread, every draw state change: blends into the layer accumulate coverage</summary>
+	/// <summary>Render thread, every draw state change: blends into the layer keep its transmittance</summary>
 	private void SetBlendStateDetour(ImmediateContext* context, uint state)
 	{
 		nint layer = this.layer;
 #pragma warning disable CS0618 // render target 0, set by the bind; ClientStructs has no current render targets yet
 		if (layer != 0 && (nint)context->BackBufferReference == layer)
 #pragma warning restore CS0618
-			state = Premultiplied(state);
+			state = Transmittance(state);
 
 		this.setBlendStateHook.Original(context, state);
 	}
 
 	/// <summary>
-	/// Layer = colour + layer * (1 - coverage) for every blend the plates use, so it composites as premultiplied alpha.
-	/// Coverage follows the colour's destination term: kept for additive, replaced for opaque, (1 - src alpha) otherwise.
-	/// The kernel caches blend states by key, rewritten keys get their own D3D state.
+	/// The layer's alpha is how much of the scene still shows through (cleared to 1), its colour what the plates added; it
+	/// composites as layer + scene * alpha. Transmittance is scaled by each blend's own destination factor, so every blend the
+	/// plates use is exact: opaque draws (blend off, their shader alpha is meaningless on the opaque final target) leave 0,
+	/// additive ones keep it, alpha blended ones take (1 - src alpha). A coverage alpha can't do the opaque case, no blend
+	/// factor writes a constant 1. The kernel caches blend states by key, rewritten keys get their own D3D state.
 	/// </summary>
-	private static uint Premultiplied(uint key)
+	private static uint Transmittance(uint key)
 	{
 		PackedBlendStateDesc desc = *(PackedBlendStateDesc*)&key;
 		if (!desc.BlendEnable)
@@ -248,11 +254,14 @@ public sealed unsafe class NameplateLayer: IDisposable
 			desc.DestBlend = (byte)Blend.Zero;
 		}
 
-		bool additive = desc.DestBlend == (byte)Blend.One;
-		bool replace = desc.DestBlend == (byte)Blend.Zero;
 		desc.BlendOpAlpha = (byte)BlendOperation.Add;
-		desc.SrcBlendAlpha = (byte)(additive ? Blend.Zero : Blend.One);
-		desc.DestBlendAlpha = (byte)(additive ? Blend.One : replace ? Blend.Zero : Blend.InverseSourceAlpha);
+		desc.SrcBlendAlpha = (byte)Blend.Zero;
+		desc.DestBlendAlpha = (byte)((Blend)desc.DestBlend switch
+		{
+			Blend.Zero or Blend.One or Blend.SourceAlpha or Blend.InverseSourceAlpha => (Blend)desc.DestBlend,
+			Blend.SourceColor => Blend.SourceAlpha, // alpha factors can't be colours
+			_ => Blend.InverseSourceAlpha,
+		});
 		desc.RenderTargetWriteMask |= (byte)ColorWriteEnable.Alpha;
 		return *(uint*)&desc;
 	}
@@ -263,7 +272,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 		this.targetView.NativePointer = (nint)texture->GetMipRenderTarget(0, 0)->D3D11RenderTargetViewOrDepthStencilView;
 		try
 		{
-			this.gameContext.ClearRenderTargetView(this.targetView, new Color4(0, 0, 0, 0));
+			this.gameContext.ClearRenderTargetView(this.targetView, new Color4(0, 0, 0, 1)); // nothing added, the scene shows through
 		}
 		finally
 		{
@@ -272,7 +281,7 @@ public sealed unsafe class NameplateLayer: IDisposable
 		}
 	}
 
-	/// <summary>Layer over the target, premultiplied; in a context state of its own so the game's bindings and state cache stay</summary>
+	/// <summary>Layer over the target (layer + target * its alpha); in a context state of its own so the game's bindings and state cache stay</summary>
 	private static nint RenderTargetView(KernelTexture* texture) => (nint)texture->GetMipRenderTarget(0, 0)->D3D11RenderTargetViewOrDepthStencilView;
 
 	private void Draw(nint renderTargetView, uint width, uint height, KernelTexture* layer)

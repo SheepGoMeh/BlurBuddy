@@ -1,4 +1,5 @@
-// Nameplate layer back over the final target: premultiplied alpha, blended with ONE, INV_SRC_ALPHA
+// Nameplate layer back over a target: its alpha is the scene's transmittance, given as coverage so ONE, INV_SRC_ALPHA
+// adds the plates over target * transmittance and leaves coverage in the target's alpha (another plugin's UI layer)
 Texture2D<float4> Layer : register(t0);
 
 // Fullscreen triangle
@@ -10,5 +11,6 @@ float4 VS(uint id : SV_VertexID) : SV_Position
 
 float4 PS(float4 position : SV_Position) : SV_Target
 {
-	return Layer.Load(int3(position.xy, 0));
+	float4 plates = Layer.Load(int3(position.xy, 0));
+	return float4(plates.rgb, 1 - plates.a);
 }
