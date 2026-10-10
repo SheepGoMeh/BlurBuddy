@@ -138,6 +138,10 @@ public sealed unsafe class UiCapture: IDisposable
 		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
 		slot->Fade = this.set == CaptureSet.Ui ? 0 : this.loadingFade.Current(); // the UI set has the real one
+		// Only over full black: anywhere else the final target there can hold UI the scene sets hide
+		Device* device = Device.Instance();
+		if (slot->Fade >= 1)
+			slot->Indicator = LoadingFade.Indicator(device->Width, device->Height);
 		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		uint key = context->SortKey;
 		uint top = (*((byte*)context + ContextSubViewFlagOffset) == 0 ? key | 0xF0000000 : key) & 0xF0000000;

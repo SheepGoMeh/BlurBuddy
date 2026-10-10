@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 
 using BlurBuddy.Capture;
+using BlurBuddy.Tracking;
 
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -50,6 +51,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		public uint HasLayer;
 		public float CoverageRadius;
 		public float Fade;
+		public ScreenRect Keep;
 	}
 
 	private Pipeline? pipeline;
@@ -97,7 +99,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 			Width = width, Height = height, RectCount = count, WholeFrame = (uint)slot->WholeFrame, Feather = Feather,
 			Style = (uint)style, BlockSize = MathF.Max(2.0f, strength * PixelsPerStrength), Strength = strength,
 			PlateCount = (uint)Math.Min(slot->PlateCount, (int)count), HasLayer = layer != null ? 1u : 0u, CoverageRadius = CoverageRadius,
-			Fade = slot->Fade,
+			Fade = slot->Fade, Keep = slot->Indicator,
 		});
 		context.CSSetShaderResource(3, layer); // Pass binds and unbinds 0-2
 		Pass(context, p.Composite, p.CompositeCb, capture, t.HalfSrv, p.RectsSrv, output, width, height);

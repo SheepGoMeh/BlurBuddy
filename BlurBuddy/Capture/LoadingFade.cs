@@ -3,6 +3,8 @@ using System;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
+using BlurBuddy.Tracking;
+
 namespace BlurBuddy.Capture;
 
 /// <summary>
@@ -59,6 +61,16 @@ public sealed unsafe class LoadingFade
 		}
 
 		return this.black && loading ? 1 : fade;
+	}
+
+	/// <summary>
+	/// The game's loading indicator: NowLoading is only that, a spinner (ui/uld/Loading_hr1.tex) under a root node that fades
+	/// in; the root's box holds the spinner as it moves. Empty when it isn't up
+	/// </summary>
+	public static ScreenRect Indicator(float width, float height)
+	{
+		AtkUnitBase* addon = Addon("NowLoading");
+		return IsShown(addon) && addon->RootNode != null ? ElementTracker.Bounds(addon->RootNode).Clamp(width, height) : ScreenRect.Empty;
 	}
 
 	private static AtkUnitBase* Addon(string name) => RaptureAtkUnitManager.Instance()->GetAddonByName(name);
