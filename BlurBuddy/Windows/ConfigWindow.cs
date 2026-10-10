@@ -60,6 +60,16 @@ public class ConfigWindow(BlurBuddyConfiguration configuration, UiCapture uiCapt
 
 		ImGui.TextDisabled(uiCapture.Status);
 		ImGui.TextDisabled(frameRenderer.ObsStatus);
+		if (VkCapture.IsWine)
+		{
+			if (ImGui.Checkbox("Send to obs-vkcapture", ref configuration.VulkanCapture))
+				configuration.Save();
+			if (ImGui.IsItemHovered())
+				ImGui.SetTooltip("Linux OBS with obs-vkcapture (OBS_VKCAPTURE=1): captures the blurred frame instead of the game");
+			if (configuration.VulkanCapture)
+				ImGui.TextDisabled(frameRenderer.VulkanStatus ?? "Vulkan capture unavailable (needs DXVK), see /xllog");
+		}
+
 		if (uiCapture.Tracker.Status.Length > 0)
 			ImGui.TextColored(new Vector4(1, 0.6f, 0.2f, 1), uiCapture.Tracker.Status);
 

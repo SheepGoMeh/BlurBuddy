@@ -33,8 +33,11 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private readonly Sheep.OBSHookLibrary.Capture obs = new();
 	private D3D11GraphicsDevice? obsDevice;
 	private D3D11GraphicsTexture? obsTexture;
+	private VkCapture? vulkan;
 
 	public string ObsStatus { get; private set; } = "Waiting for OBS";
+
+	public string? VulkanStatus => this.vulkan?.Status;
 
 	/// <summary>Raw capture until a composite writes the output</summary>
 	public nint PreviewSrv => (this.Composite == null ? this.captureSrv : this.outputSrv)?.NativePointer ?? 0;
@@ -95,6 +98,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 		    desc.Format == this.captureDesc.Format)
 			return;
 
+		this.vulkan?.SetSource(0);
 		this.ReleaseTextures();
 		ID3D11Device device = source.Device; // cached by the wrapper, released when it is repointed
 		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1, BindFlags.ShaderResource));
@@ -105,6 +109,18 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.outputUav = device.CreateUnorderedAccessView(this.output);
 		this.outputSrv = device.CreateShaderResourceView(this.output);
 		this.captureDesc = desc;
+		this.vulkan?.SetSource(this.output.NativePointer);
+	}
+
+	/// <summary>Framework thread, null before disposing the capture</summary>
+	public void SetVulkan(VkCapture? capture)
+	{
+		lock (this.resourceLock)
+		{
+			this.vulkan?.SetSource(0);
+			this.vulkan = capture;
+			capture?.SetSource(this.output?.NativePointer ?? 0);
+		}
 	}
 
 	/// <summary>Render thread, takes the capture from OBS's own hook if it is loaded</summary>

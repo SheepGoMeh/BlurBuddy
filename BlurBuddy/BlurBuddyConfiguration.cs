@@ -33,6 +33,7 @@ public class BlurBuddyConfiguration: IPluginConfiguration
 	public BlurStyle Style = BlurStyle.Gaussian;
 	public float BlurStrength = 8.0f; // Gaussian sigma (half resolution px), pixelate / crystallize cell size / 4
 	public int NameplatePadding = 4;
+	public bool VulkanCapture; // Proton: hand the output to obs-vkcapture
 	public bool ShowDebug;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
