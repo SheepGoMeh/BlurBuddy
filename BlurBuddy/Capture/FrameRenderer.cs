@@ -168,7 +168,10 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.vulkan?.SetSource(0);
 		this.ReleaseTextures();
 		ID3D11Device device = source.Device; // cached by the wrapper, released when it is repointed
-		this.capture = device.CreateTexture2D(new Texture2DDescription(desc.Format, desc.Width, desc.Height, 1, 1,
+		Format format = Typed(desc.Format);
+		if (format != desc.Format)
+			Service.PluginLog.Information($"Final target is {desc.Format}, copied as {format}");
+		this.capture = device.CreateTexture2D(new Texture2DDescription(format, desc.Width, desc.Height, 1, 1,
 			BindFlags.ShaderResource | BindFlags.RenderTarget));
 		this.captureSrv = device.CreateShaderResourceView(this.capture);
 		this.captureRtv = device.CreateRenderTargetView(this.capture);
@@ -180,6 +183,20 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.captureDesc = desc;
 		this.vulkan?.SetSource(this.output.NativePointer);
 	}
+
+	/// <summary>
+	/// A copy's format: the source's, made viewable. Typeless targets (a swapchain or tool that views them as sRGB) take their
+	/// UNORM member, sRGB ones too: the copy keeps the stored bytes, which are what the screen shows
+	/// </summary>
+	private static Format Typed(Format format) => format switch
+	{
+		Format.R8G8B8A8_Typeless or Format.R8G8B8A8_UNorm_SRgb => Format.R8G8B8A8_UNorm,
+		Format.B8G8R8A8_Typeless or Format.B8G8R8A8_UNorm_SRgb => Format.B8G8R8A8_UNorm,
+		Format.B8G8R8X8_Typeless or Format.B8G8R8X8_UNorm_SRgb => Format.B8G8R8X8_UNorm,
+		Format.R10G10B10A2_Typeless => Format.R10G10B10A2_UNorm,
+		Format.R16G16B16A16_Typeless => Format.R16G16B16A16_Float,
+		_ => format,
+	};
 
 	/// <summary>Framework thread, null before disposing the capture</summary>
 	public void SetVulkan(VkCapture? capture)
