@@ -148,7 +148,19 @@ public sealed unsafe class NameplateLayer: IDisposable
 			return;
 
 		this.Frame++;
-		this.SceneReady?.Invoke(final, set);
+		try
+		{
+			this.SceneReady?.Invoke(final, set);
+		}
+		finally
+		{
+			this.DrawBack(final, ui);
+		}
+	}
+
+	/// <summary>The plates back on the screen, also when saving the scene failed</summary>
+	private void DrawBack(nint final, nint ui)
+	{
 		if (this.pending)
 		{
 			// Every capture this frame reads it, the next frame's plate bind clears it
