@@ -32,6 +32,7 @@ public sealed unsafe class UiCapture: IDisposable
 	private readonly BlurBuddyConfiguration configuration;
 	private readonly NameplateLayer layer;
 	private readonly FrameSlots slots = new();
+	private readonly LoadingFade loadingFade = new();
 	private readonly Hook<AtkServer.Delegates.Draw> draw;
 	private readonly Hook<Draw2DDelegate> draw2D;
 	private readonly Hook<PushBackDelegate> pushBack;
@@ -136,6 +137,7 @@ public sealed unsafe class UiCapture: IDisposable
 			this.Tracker.Collect(slot, this.set); // UI hidden: the frame is the scene for every set
 		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
+		slot->Fade = this.set == CaptureSet.Ui ? 0 : this.loadingFade.Current(); // the UI set has the real one
 		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		uint key = context->SortKey;
 		uint top = (*((byte*)context + ContextSubViewFlagOffset) == 0 ? key | 0xF0000000 : key) & 0xF0000000;
