@@ -131,10 +131,12 @@ public sealed unsafe class FrameRenderer: IDisposable
 						break;
 				}
 
-				// The copies have no UI: the loading indicator from the finished frame
-				if (copied && frame->Set != CaptureSet.Ui && !frame->Indicator.IsEmpty)
+				// The copies have no UI: the loading indicator, or all of the loading screen, from the finished frame
+				if (copied && frame->Set != CaptureSet.Ui && (frame->KeepFrame > 0 || !frame->Indicator.IsEmpty))
 				{
-					ScreenRect r = frame->Indicator;
+					ScreenRect r = frame->KeepFrame > 0
+						? new ScreenRect(0, 0, this.captureDesc.Width, this.captureDesc.Height)
+						: frame->Indicator;
 					this.gameContext.CopySubresourceRegion(this.capture, 0, (uint)r.Left, (uint)r.Top, 0, this.gameTexture, 0,
 						new Box((int)r.Left, (int)r.Top, 0, (int)r.Right, (int)r.Bottom, 1));
 				}

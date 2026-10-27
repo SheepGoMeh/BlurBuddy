@@ -34,6 +34,7 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 	private readonly List<(ScreenRect Rect, string Name)> lastRects = [];
 	private readonly HashSet<nint> drawnUnits = [];
 	private readonly TreeWalk collectWalk = new(false);
+	private readonly TreeWalk hideWalk = new(false);
 	private readonly TreeWalk pickWalk = new(true);
 	private enum PlateOwner : byte
 	{
@@ -53,20 +54,23 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 	/// <summary>Rectangles of the last capture with their addon, for the debug overlay</summary>
 	public IReadOnlyList<(ScreenRect Rect, string Name)> LastRects => this.lastRects;
 
-	public void Collect(FrameSlot* slot, CaptureSet set)
+	public void Collect(FrameSlot* slot, CaptureSet set, bool loadingScreen)
 	{
 		this.lastRects.Clear();
-		if (set == CaptureSet.None)
+		bool hideUi = loadingScreen && set != CaptureSet.Ui;
+		if (set == CaptureSet.None && !hideUi)
 			return;
 
 		try
 		{
 			Device* device = Device.Instance();
 			float width = device->Width, height = device->Height;
-			if (configuration.BlurNameplates)
+			if (set != CaptureSet.None && configuration.BlurNameplates)
 				this.CollectNameplates(slot, width, height);
 			if (set == CaptureSet.Ui)
 				this.CollectModules(slot, width, height);
+			if (hideUi)
+				this.CollectLoadingUi(slot, width, height);
 			this.Status = slot->WholeFrame != 0 ? "Too many elements, blurring the whole frame" : "";
 		}
 		catch (Exception e)
@@ -262,6 +266,33 @@ public sealed unsafe class ElementTracker(BlurBuddyConfiguration configuration)
 				if (!walk.Rules.HasRules && rect.Area >= width * height * FullScreenShare)
 					continue;
 				this.Add(slot, rect, name);
+			}
+		}
+	}
+
+	/// <summary>
+	/// The game draws its UI (chat, the server bar, other plugins' overlays) over its loading screen: the rectangles of every
+	/// drawn addon but the loading screen's own, hidden unless there is artwork over them (composite.hlsl)
+	/// </summary>
+	private void CollectLoadingUi(FrameSlot* slot, float width, float height)
+	{
+		ScreenRect screen = new(0, 0, width, height);
+		this.CollectDrawnUnits(&RaptureAtkUnitManager.Instance()->AtkUnitManager);
+		TreeWalk walk = this.hideWalk; // never Begun: no rules, every node counts
+		foreach (nint pointer in this.drawnUnits)
+		{
+			AtkUnitBase* unit = (AtkUnitBase*)pointer;
+			string name = unit->NameString;
+			if (name is "NowLoading" or "FadeMiddle" or "FadeBack")
+				continue;
+
+			walk.Pieces.Clear();
+			walk.PartNodes.Clear();
+			Walk(walk, unit->RootNode, 0, screen, NodePath.Root, true);
+			foreach (ScreenRect rect in ScreenRect.Merge(walk.Pieces, MergeGap))
+			{
+				if (rect.Area < width * height * FullScreenShare) // the fades are the loading screen's
+					this.Add(slot, rect, name);
 			}
 		}
 	}

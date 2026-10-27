@@ -22,6 +22,7 @@ cbuffer Constants : register(b0)
 	float CoverageRadius; // pixels the glyph coverage grows by, so the blur hides the text's shape too
 	float Fade; // black over everything, the loading screen the scene sets miss
 	float4 Keep; // left, top, right, bottom: shown as captured over the black, the game's loading indicator
+	float KeepFrame; // 0 to 1: how much of the whole capture, the game's own loading screen, shows over the black
 };
 
 // Whether a plate drew here at all, any of it hidden in full: translucent plates (the game fades them while moving) are still
@@ -101,6 +102,22 @@ float3 Diamond(float2 p)
 	return colour * lerp(0.82f, 1.06f, saturate(rim * 6)) + facet;
 }
 
+// Whether the loading screen has artwork: a lit picture covers much of the screen, UI over black little of it
+float Artwork()
+{
+	float lit = 0;
+	for (uint y = 0; y < 9; y++)
+	{
+		for (uint x = 0; x < 16; x++)
+		{
+			float3 c = Capture[uint2((float2(x, y) + 0.5f) / float2(16, 9) * float2(Size))].rgb;
+			lit += max(c.r, max(c.g, c.b)) > 0.04f ? 1 : 0;
+		}
+	}
+
+	return smoothstep(0.3f, 0.5f, lit / 144);
+}
+
 [numthreads(8, 8, 1)]
 void CS(uint2 id : SV_DispatchThreadID)
 {
@@ -131,19 +148,21 @@ void CS(uint2 id : SV_DispatchThreadID)
 	}
 
 	float4 colour = Capture[id];
-	if (mask <= 0)
+	float3 shown = colour.rgb;
+	if (mask > 0)
 	{
-		Output[id] = float4(colour.rgb * (1 - Fade), 1);
-		return;
+		float3 hidden;
+		switch (Style)
+		{
+			case 1: hidden = Pixelate(p); break;
+			case 2: hidden = Crystallize(p); break;
+			case 3: hidden = Diamond(p); break;
+			default: hidden = Blurred.SampleLevel(Linear, p / Size, 0).rgb; break;
+		}
+		shown = lerp(colour.rgb, hidden, mask);
 	}
 
-	float3 hidden;
-	switch (Style)
-	{
-		case 1: hidden = Pixelate(p); break;
-		case 2: hidden = Crystallize(p); break;
-		case 3: hidden = Diamond(p); break;
-		default: hidden = Blurred.SampleLevel(Linear, p / Size, 0).rgb; break;
-	}
-	Output[id] = float4(lerp(colour.rgb, hidden, mask) * (1 - Fade), 1);
+	// The loading screen over the black hides the UI in the rectangles, unless there is artwork, which is over it
+	float ui = KeepFrame > 0 && mask > 0 ? saturate(mask) * (1 - Artwork()) : 0;
+	Output[id] = float4(lerp(shown * (1 - Fade), colour.rgb * (1 - ui), KeepFrame), 1);
 }

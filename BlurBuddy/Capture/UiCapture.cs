@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 using Dalamud.Hooking;
 
@@ -24,6 +25,7 @@ public sealed unsafe class UiCapture: IDisposable
 	private const int ToneAdjustView = 31;
 	private const uint AfterToneAdjust = 0x0FFFFFFF; // ToneAdjust's own key, queued after it so sorted after it
 	private const int ContextSubViewFlagOffset = 0x2F70;
+	private const float EaseSeconds = 0.3f;
 
 	private delegate void Draw2DDelegate(UIModule* module);
 
@@ -37,6 +39,9 @@ public sealed unsafe class UiCapture: IDisposable
 	private readonly Hook<Draw2DDelegate> draw2D;
 	private readonly Hook<PushBackDelegate> pushBack;
 	private volatile CaptureSet set;
+	private long easedAt = Stopwatch.GetTimestamp();
+	private float shownFade; // the fade and the kept loading screen, eased to the loading logic's over EaseSeconds
+	private float shownFrame;
 	private bool uiDrawn; // AtkServer.Draw ran this frame
 
 	// AtkServer.Draw's context: its bind of the final target without depth is the 2D UI's
@@ -118,6 +123,9 @@ public sealed unsafe class UiCapture: IDisposable
 		return targets != null && command->RenderTargets[0].Value == targets->SwapChainBackBuffer && command->DepthBuffer == null;
 	}
 
+	private static float Approach(float current, float target, float step) =>
+		current < target ? MathF.Min(target, current + step) : MathF.Max(target, current - step);
+
 	private void Draw2DDetour(UIModule* module)
 	{
 		this.uiDrawn = false;
@@ -134,15 +142,27 @@ public sealed unsafe class UiCapture: IDisposable
 	private void QueueCapture()
 	{
 		FrameSlot* slot = this.slots.Next();
+		bool ui = this.set == CaptureSet.Ui; // it has the real fades
+		float fade = ui ? 0 : this.loadingFade.Current();
+		bool covered = !ui && this.loadingFade.Covered;
 		if (this.uiDrawn)
-			this.Tracker.Collect(slot, this.set); // UI hidden: the frame is the scene for every set
+			this.Tracker.Collect(slot, this.set, covered); // UI hidden: the frame is the scene for every set
 		slot->Target = (nint)this.final;
 		slot->AfterUiBind = this.uiBindSeen ? 1 : 0;
 		slot->Set = this.set;
-		slot->Fade = this.set == CaptureSet.Ui ? 0 : this.loadingFade.Current(); // the UI set has the real one
+
+		// The black and the loading screen come in over EaseSeconds, whatever the game's timing; the loading screen goes at
+		// once, the frame has the UI back when it ends
+		long now = Stopwatch.GetTimestamp();
+		float step = Math.Clamp((float)Stopwatch.GetElapsedTime(this.easedAt, now).TotalSeconds / EaseSeconds, 0, 1);
+		this.easedAt = now;
+		this.shownFade = Approach(this.shownFade, fade, step);
+		this.shownFrame = covered ? Approach(this.shownFrame, 1, step) : 0;
+		slot->Fade = this.shownFade;
+		slot->KeepFrame = this.shownFrame;
 		// Only over full black: anywhere else the final target there can hold UI the scene sets hide
 		Device* device = Device.Instance();
-		if (slot->Fade >= 1)
+		if (fade >= 1)
 			slot->Indicator = LoadingFade.Indicator(device->Width, device->Height);
 		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		uint key = context->SortKey;

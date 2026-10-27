@@ -16,6 +16,7 @@ public unsafe struct FrameSlot
 	public CaptureSet Set; // what the frame was tracked for: a set change reaches the render thread frames later
 	public float Fade; // black over the stream, 0 to 1: the loading screen the scene sets don't capture
 	public ScreenRect Indicator; // the game's loading indicator, kept from the final target over the black
+	public float KeepFrame; // 0 to 1: the whole final target over the black, the game's own loading screen
 	public nint Target; // Kernel::Texture the UI pass renders into, read when the capture is queued
 	public fixed float Rects[FrameSlots.MaxRects * 4]; // left, top, right, bottom in pixels
 }
@@ -39,6 +40,7 @@ public sealed unsafe class FrameSlots: IDisposable
 		slot->AfterUiBind = 0;
 		slot->Fade = 0;
 		slot->Indicator = ScreenRect.Empty;
+		slot->KeepFrame = 0;
 		return slot;
 	}
 

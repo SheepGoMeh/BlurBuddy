@@ -52,6 +52,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 		public float CoverageRadius;
 		public float Fade;
 		public ScreenRect Keep;
+		public float KeepFrame;
 	}
 
 	private Pipeline? pipeline;
@@ -100,7 +101,7 @@ public sealed unsafe class Blur(BlurBuddyConfiguration configuration): IDisposab
 			Width = width, Height = height, RectCount = count, WholeFrame = (uint)slot->WholeFrame, Feather = Feather,
 			Style = (uint)style, BlockSize = MathF.Max(2.0f, strength * PixelsPerStrength), Strength = strength,
 			PlateCount = (uint)Math.Min(slot->PlateCount, (int)count), PlateCoverage = (uint)coverage, CoverageRadius = CoverageRadius,
-			Fade = slot->Fade, Keep = slot->Indicator,
+			Fade = slot->Fade, Keep = slot->Indicator, KeepFrame = slot->KeepFrame,
 		});
 		// Pass binds and unbinds 0-2
 		context.CSSetShaderResource(3, coverage == FrameRenderer.Coverage.None ? null : first);
