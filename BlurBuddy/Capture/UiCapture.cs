@@ -35,6 +35,7 @@ public sealed unsafe class UiCapture: IDisposable
 	private readonly PlateCapture plates;
 	private readonly FrameSlots slots = new();
 	private readonly LoadingFade loadingFade = new();
+	private readonly ToneAdjust toneAdjust = new();
 	private readonly Hook<AtkServer.Delegates.Draw> draw;
 	private readonly Hook<Draw2DDelegate> draw2D;
 	private readonly Hook<PushBackDelegate> pushBack;
@@ -167,11 +168,32 @@ public sealed unsafe class UiCapture: IDisposable
 		Context* context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
 		uint key = context->SortKey;
 		uint top = (*((byte*)context + ContextSubViewFlagOffset) == 0 ? key | 0xF0000000 : key) & 0xF0000000;
-		this.Status = !RenderCallback.Queue(&FrameRenderer.OnRender, (nint)slot, top | AfterToneAdjust, ToneAdjustView)
+		bool queued = RenderCallback.Queue(&FrameRenderer.OnRender, (nint)slot, top | AfterToneAdjust, ToneAdjustView);
+		if (queued)
+			this.QueueToneAdjust(context, slot, top | AfterToneAdjust);
+		this.Status = !queued
 			? "Failed to queue the capture"
 			: this.uiDrawn && !this.uiBindSeen
 				? "2D UI bind not found, the stream can show the UI and nameplates"
 				: "Capturing";
+	}
+
+	/// <summary>After the capture: the game's ToneAdjust on it, then streamed</summary>
+	private void QueueToneAdjust(Context* context, FrameSlot* slot, uint key)
+	{
+		uint contextKey = context->SortKey;
+		int contextView = context->ViewIndex;
+		context->SortKey = key;
+		context->ViewIndex = ToneAdjustView;
+		bool toned = this.toneAdjust.Queue(slot, this.final);
+		context->SortKey = contextKey;
+		context->ViewIndex = contextView;
+		// Without the callback the capture streams as is
+		if (toned && !RenderCallback.Queue(&FrameRenderer.OnToned, (nint)slot, key, ToneAdjustView))
+		{
+			slot->ToneSource = 0;
+			slot->ToneTarget = 0;
+		}
 	}
 
 	public void Stop()
@@ -186,6 +208,7 @@ public sealed unsafe class UiCapture: IDisposable
 		this.draw.Dispose();
 		this.draw2D.Dispose();
 		this.pushBack.Dispose();
+		this.toneAdjust.Dispose();
 		this.slots.Dispose();
 	}
 }

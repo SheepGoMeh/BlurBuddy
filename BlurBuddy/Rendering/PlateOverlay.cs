@@ -8,8 +8,8 @@ namespace BlurBuddy.Rendering;
 
 /// <summary>
 /// Render thread: a premultiplied plate layer (UpscaleBuddy's UI layer, copied) over our own copy of the scene, for scene
-/// and nameplates under frame generation. Draws only into our textures, in a context state of its own so the game's
-/// bindings and state cache stay
+/// and nameplates under frame generation; unblended, a copy between formats. Draws only into our textures, in a context
+/// state of its own so the game's bindings and state cache stay
 /// </summary>
 public sealed class PlateOverlay: IDisposable
 {
@@ -19,7 +19,8 @@ public sealed class PlateOverlay: IDisposable
 	private ID3D11PixelShader? pixelShader;
 	private ID3D11BlendState? blendState;
 
-	public void Draw(ID3D11DeviceContext gameContext, ID3D11RenderTargetView target, ID3D11ShaderResourceView plates, uint width, uint height)
+	public void Draw(ID3D11DeviceContext gameContext, ID3D11RenderTargetView target, ID3D11ShaderResourceView plates, uint width, uint height,
+		bool blend = true)
 	{
 		if (this.state == null)
 			this.CreateResources(gameContext);
@@ -27,7 +28,7 @@ public sealed class PlateOverlay: IDisposable
 		ID3D11DeviceContext1 context = this.context1!;
 		ID3DDeviceContextState previous = context.SwapDeviceContextState(this.state!);
 		context.OMSetRenderTargets(target, null);
-		context.OMSetBlendState(this.blendState);
+		context.OMSetBlendState(blend ? this.blendState : null);
 		context.RSSetViewport(0, 0, width, height, 0, 1);
 		context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
 		context.VSSetShader(this.vertexShader);

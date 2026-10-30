@@ -18,6 +18,9 @@ public unsafe struct FrameSlot
 	public ScreenRect Indicator; // the game's loading indicator, kept from the final target over the black
 	public float KeepFrame; // 0 to 1: the whole final target over the black, the game's own loading screen
 	public nint Target; // Kernel::Texture the UI pass renders into, read when the capture is queued
+	public nint ToneSource; // Kernel::Textures the game's ToneAdjust runs between for the stream, 0 when it doesn't
+	public nint ToneTarget;
+	public int FinishedToned; // the final target has the game's brightness already
 	public fixed float Rects[FrameSlots.MaxRects * 4]; // left, top, right, bottom in pixels
 }
 
@@ -41,6 +44,9 @@ public sealed unsafe class FrameSlots: IDisposable
 		slot->Fade = 0;
 		slot->Indicator = ScreenRect.Empty;
 		slot->KeepFrame = 0;
+		slot->ToneSource = 0;
+		slot->ToneTarget = 0;
+		slot->FinishedToned = 0;
 		return slot;
 	}
 

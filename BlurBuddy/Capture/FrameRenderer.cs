@@ -57,6 +57,12 @@ public sealed unsafe class FrameRenderer: IDisposable
 	private ID3D11Texture2D? output;
 	private ID3D11UnorderedAccessView? outputUav;
 	private ID3D11ShaderResourceView? outputSrv;
+	private ID3D11RenderTargetView? outputRtv;
+	// Views of the game owned ToneAdjust textures, made again when a slot brings others
+	private nint toneSource;
+	private ID3D11RenderTargetView? toneSourceRtv;
+	private nint toneTarget;
+	private ID3D11ShaderResourceView? toneTargetSrv;
 
 	public FrameRenderer(PlateCapture plates)
 	{
@@ -83,6 +89,20 @@ public sealed unsafe class FrameRenderer: IDisposable
 	public uint OutputHeight => this.captureDesc.Height;
 
 	public CompositeDelegate? Composite { get; set; }
+
+	/// <summary>After the game's ToneAdjust ran on the output: copied back and streamed</summary>
+	[UnmanagedCallersOnly]
+	public static void OnToned(nint slot)
+	{
+		try
+		{
+			instance?.Toned(slot);
+		}
+		catch (Exception e)
+		{
+			Service.PluginLog.Error(e, "BlurBuddy ToneAdjust failed");
+		}
+	}
 
 	[UnmanagedCallersOnly]
 	public static void OnRender(nint slot)
@@ -152,6 +172,38 @@ public sealed unsafe class FrameRenderer: IDisposable
 					this.gameContext.CopyResource(this.output, this.capture);
 				}
 
+				// Streamed after the game's ToneAdjust, unless the finished frame has it
+				bool finished = !copied || frame->Set == CaptureSet.Ui;
+				if (finished && frame->FinishedToned != 0)
+					frame->ToneTarget = 0; // OnToned leaves it
+
+				if (this.ToneViews(frame))
+					this.overlay.Draw(this.gameContext, this.toneSourceRtv!, this.outputSrv!, this.captureDesc.Width, this.captureDesc.Height,
+						blend: false);
+				else
+					this.PresentToObs();
+			}
+			finally
+			{
+				this.Unbind();
+			}
+		}
+	}
+
+	private void Toned(nint slot)
+	{
+		FrameSlot* frame = (FrameSlot*)slot;
+		lock (this.resourceLock)
+		{
+			// Resized in between: the frame is dropped
+			if (this.output == null || !this.ToneViews(frame))
+				return;
+
+			this.gameContext.NativePointer = (nint)Device.Instance()->D3D11DeviceContext;
+			try
+			{
+				this.overlay.Draw(this.gameContext, this.outputRtv!, this.toneTargetSrv!, this.captureDesc.Width, this.captureDesc.Height,
+					blend: false);
 				this.PresentToObs();
 			}
 			finally
@@ -159,6 +211,39 @@ public sealed unsafe class FrameRenderer: IDisposable
 				this.Unbind();
 			}
 		}
+	}
+
+	/// <summary>Views of the slot's ToneAdjust textures, false when it has none or they aren't the output's size</summary>
+	private bool ToneViews(FrameSlot* frame)
+	{
+		Texture* source = (Texture*)frame->ToneSource;
+		Texture* target = (Texture*)frame->ToneTarget;
+		if (source == null || target == null || source->D3D11Texture2D == null || target->D3D11Texture2D == null ||
+		    source->ActualWidth != this.captureDesc.Width || source->ActualHeight != this.captureDesc.Height ||
+		    target->ActualWidth != this.captureDesc.Width || target->ActualHeight != this.captureDesc.Height)
+			return false;
+
+		// The views keep the textures alive, so a pointer seen again is the same texture
+		ID3D11Device device = this.output!.Device; // cached by the wrapper
+		if (this.toneSource != (nint)source->D3D11Texture2D)
+		{
+			this.toneSourceRtv?.Dispose();
+			using ID3D11Texture2D texture = new((nint)source->D3D11Texture2D);
+			texture.AddRef(); // the wrapper releases on dispose
+			this.toneSourceRtv = device.CreateRenderTargetView(texture);
+			this.toneSource = (nint)source->D3D11Texture2D;
+		}
+
+		if (this.toneTarget != (nint)target->D3D11Texture2D)
+		{
+			this.toneTargetSrv?.Dispose();
+			using ID3D11Texture2D texture = new((nint)target->D3D11Texture2D);
+			texture.AddRef();
+			this.toneTargetSrv = device.CreateShaderResourceView(texture);
+			this.toneTarget = (nint)target->D3D11Texture2D;
+		}
+
+		return true;
 	}
 
 	private void Bind(Texture* texture)
@@ -280,9 +365,10 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.platedSrv = device.CreateShaderResourceView(this.plated);
 		// RGBA: typed UAV stores on BGRA are optional in D3D11
 		this.output = device.CreateTexture2D(new Texture2DDescription(Format.R8G8B8A8_UNorm, desc.Width, desc.Height, 1, 1,
-			BindFlags.ShaderResource | BindFlags.UnorderedAccess));
+			BindFlags.ShaderResource | BindFlags.UnorderedAccess | BindFlags.RenderTarget));
 		this.outputUav = device.CreateUnorderedAccessView(this.output);
 		this.outputSrv = device.CreateShaderResourceView(this.output);
+		this.outputRtv = device.CreateRenderTargetView(this.output);
 		this.captureDesc = desc;
 		this.savedFrame = uint.MaxValue; // new copies hold nothing yet
 		this.vulkan?.SetSource(this.output.NativePointer);
@@ -352,6 +438,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 		// A resized output is wrapped again, the library starts a new capture on size change
 		this.obsTexture?.Dispose();
 		this.obsTexture = null;
+		this.outputRtv?.Dispose();
 		this.outputSrv?.Dispose();
 		this.outputUav?.Dispose();
 		this.output?.Dispose();
@@ -364,6 +451,7 @@ public sealed unsafe class FrameRenderer: IDisposable
 		this.plated?.Dispose();
 		this.layerSrv?.Dispose();
 		this.layerCopy?.Dispose();
+		this.outputRtv = null;
 		this.outputSrv = null;
 		this.outputUav = null;
 		this.output = null;
@@ -385,6 +473,8 @@ public sealed unsafe class FrameRenderer: IDisposable
 		lock (this.resourceLock)
 		{
 			this.ReleaseTextures();
+			this.toneSourceRtv?.Dispose();
+			this.toneTargetSrv?.Dispose();
 			this.overlay.Dispose();
 		}
 
