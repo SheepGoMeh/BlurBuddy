@@ -40,6 +40,7 @@ public class BlurBuddyPlugin: IDalamudPlugin
 			this.configuration.Rules.Add(new UiRule { Addon = "_TargetCursor" });
 			this.configuration.Version = 1;
 		}
+		Service.PluginLog.Information($"BlurBuddy Vulkan capture wine detection: {VkCapture.IsWine}");
 		this.plateCapture = new PlateCapture();
 		this.frameRenderer = new FrameRenderer(this.plateCapture);
 		this.blur = new Blur(this.configuration);

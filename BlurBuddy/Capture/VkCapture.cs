@@ -61,7 +61,110 @@ public sealed unsafe partial class VkCapture: IDisposable
 
 	private bool logged;
 
-	public static bool IsWine { get; } = NativeLibrary.TryLoad("ntdll.dll", out nint ntdll) && NativeLibrary.TryGetExport(ntdll, "wine_get_version", out _);
+	public static bool IsWine { get; } = DetectWine();
+
+	private static bool DetectWine()
+	{
+		// Overrides so a broken detection can be diagnosed and worked around without a code change
+		if (Environment.GetEnvironmentVariable("BLURBUDDY_FORCE_VKCAPTURE") == "1")
+			return true;
+		if (Environment.GetEnvironmentVariable("BLURBUDDY_DISABLE_VKCAPTURE") == "1")
+			return false;
+
+		bool loaded = NativeLibrary.TryLoad("ntdll.dll", out nint ntdll);
+		bool hasExport = loaded && NativeLibrary.TryGetExport(ntdll, "wine_get_version", out _);
+		Service.PluginLog.Information($"Vulkan capture NativeLibrary probe: loaded={loaded} module={ntdll:X} export={hasExport}");
+		if (hasExport)
+			return true;
+
+		// Fallback: ask the Win32 loader directly, same export, no NativeLibrary involved
+		nint module = GetModuleHandleW("ntdll.dll");
+		nint proc = module != 0 ? GetProcAddress(module, "wine_get_version") : 0;
+		bool onDisk = NtdllFileHasWineExports();
+		Service.PluginLog.Information($"Vulkan capture fallback probe: module={module:X} proc={proc:X} nt={GetProcAddress(module, "NtCreateFile") != 0} ondisk={onDisk}");
+		if (proc != 0)
+			return true;
+
+		// tkg-style wine builds (XIVLauncher's wine-xiv among them) hide wine_get_version and the
+		// other wine_* exports from GetProcAddress (HideWineExports, to keep anticheat from
+		// detecting wine), but the on-disk image still lists them
+		return NtdllFileHasWineExports();
+	}
+
+	private static unsafe bool NtdllFileHasWineExports()
+	{
+		try
+		{
+			var path = stackalloc char[520];
+			uint len = GetModuleFileNameW(GetModuleHandleW("ntdll.dll"), path, 520);
+			if (len == 0 || len >= 520)
+				return false;
+			using var reader = new System.IO.BinaryReader(System.IO.File.OpenRead(new string(path, 0, (int)len)));
+			if (reader.ReadUInt16() != 0x5A4D) // MZ
+				return false;
+			reader.BaseStream.Seek(0x3C, System.IO.SeekOrigin.Begin);
+			reader.BaseStream.Seek(reader.ReadInt32(), System.IO.SeekOrigin.Begin); // e_lfanew
+			if (reader.ReadUInt32() != 0x00004550) // PE00
+				return false;
+			reader.ReadUInt16(); // machine
+			ushort sections = reader.ReadUInt16();
+			reader.ReadBytes(12); // time date stamp, symbol table pointer, symbol count
+			ushort sizeOptional = reader.ReadUInt16();
+			reader.ReadBytes(2); // characteristics
+			reader.ReadBytes(112); // optional header up to the data directories (PE32+)
+			uint exportRva = reader.ReadUInt32(); // DataDirectory[0].VirtualAddress at offset 112
+			reader.ReadUInt32(); // DataDirectory[0].Size
+			long sectionBase = reader.BaseStream.Position + sizeOptional - 120;
+
+			long FileOffset(uint rva)
+			{
+				for (int i = 0; i < sections && i < 96; i++)
+				{
+					reader.BaseStream.Seek(sectionBase + 40L * i + 12, System.IO.SeekOrigin.Begin);
+					uint va = reader.ReadUInt32();
+					uint rawSize = reader.ReadUInt32();
+					uint rawPtr = reader.ReadUInt32();
+					if (rawSize != 0 && rva >= va && rva < va + rawSize)
+						return rawPtr + (rva - va);
+				}
+				return 0;
+			}
+
+			long exportOffset = FileOffset(exportRva);
+			if (exportRva == 0 || exportOffset == 0)
+				return false;
+			reader.BaseStream.Seek(exportOffset + 20, System.IO.SeekOrigin.Begin);
+			uint funcCount = reader.ReadUInt32();
+			uint nameCount = reader.ReadUInt32();
+			if (nameCount == 0 || nameCount > 100000 || funcCount > 100000)
+				return false;
+			reader.ReadUInt32(); // AddressOfFunctions
+			long namesOffset = FileOffset(reader.ReadUInt32()); // AddressOfNames
+			if (namesOffset == 0)
+				return false;
+			for (uint i = 0; i < nameCount; i++)
+			{
+				reader.BaseStream.Seek(namesOffset + 4L * i, System.IO.SeekOrigin.Begin);
+				uint nameRva = reader.ReadUInt32();
+				long nameHere = reader.BaseStream.Position;
+				long nameOffset = FileOffset(nameRva);
+				if (nameOffset != 0)
+				{
+					reader.BaseStream.Seek(nameOffset, System.IO.SeekOrigin.Begin);
+					byte[] name = reader.ReadBytes(8);
+					if (name.Length >= 5 && name[0] == (byte)'w' && name[1] == (byte)'i' && name[2] == (byte)'n' && name[3] == (byte)'e' && name[4] == (byte)'_')
+						return true;
+				}
+				reader.BaseStream.Seek(nameHere, System.IO.SeekOrigin.Begin);
+			}
+			return false;
+		}
+		catch (Exception e)
+		{
+			Service.PluginLog.Error(e, "Vulkan capture on-disk ntdll probe failed");
+			return false;
+		}
+	}
 
 	public string Status { get; private set; } = "Waiting for the first frame";
 
@@ -565,4 +668,10 @@ public sealed unsafe partial class VkCapture: IDisposable
 
 	[LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
 	private static partial nint GetModuleHandleW(string? name);
+
+	[LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf8)]
+	private static partial nint GetProcAddress(nint module, string name);
+
+	[LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
+	private static unsafe partial uint GetModuleFileNameW(nint module, char* filename, uint size);
 }
